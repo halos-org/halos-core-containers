@@ -1,6 +1,6 @@
 name: Homarr
 package_name: homarr-container
-version: 1.45.3-1
+version: 1.45.3-2
 upstream_version: 1.45.3
 description: Dashboard landing page for HaLOS
 long_description: |
@@ -36,3 +36,5 @@ web_ui:
   protocol: http
 default_config:
   SECRET_ENCRYPTION_KEY: ""
+generate_secrets:
+  SECRET_ENCRYPTION_KEY: hex32
