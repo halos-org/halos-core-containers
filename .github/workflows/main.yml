@@ -1,0 +1,16 @@
+name: Main Branch CI/CD
+
+on:
+  push:
+    branches: [main]
+
+jobs:
+  build-release:
+    uses: hatlabs/shared-workflows/.github/workflows/build-release.yml@main
+    with:
+      package-name: homarr-container
+      package-description: 'Homarr dashboard container for HaLOS'
+      apt-distro: trixie
+      apt-component: main
+    secrets:
+      APT_REPO_PAT: ${{ secrets.APT_REPO_PAT }}

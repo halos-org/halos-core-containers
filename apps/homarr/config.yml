@@ -1,0 +1,16 @@
+version: "1.0"
+
+groups:
+  - id: security
+    label: Security Settings
+    description: Encryption and security configuration
+    fields:
+      - id: SECRET_ENCRYPTION_KEY
+        label: Encryption Key
+        type: string
+        default: ""
+        required: true
+        description: |
+          64-character hexadecimal encryption key for securing sensitive data.
+          Generate one using: openssl rand -hex 32
+          If left empty, a key will be generated automatically on first install.

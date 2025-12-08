@@ -1,0 +1,15 @@
+services:
+  homarr:
+    image: ghcr.io/homarr-labs/homarr:v1.45.3
+    container_name: homarr
+    restart: no
+    ports:
+      - "80:7575"
+    environment:
+      - SECRET_ENCRYPTION_KEY=${SECRET_ENCRYPTION_KEY}
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - ${CONTAINER_DATA_ROOT}/data:/appdata
+    logging:
+      options:
+        max-size: 10m

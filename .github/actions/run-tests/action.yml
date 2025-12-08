@@ -1,0 +1,35 @@
+name: 'Run Tests'
+description: 'Run all tests for halos-core-containers'
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.11'
+
+    - name: Install dependencies
+      shell: bash
+      run: pip install pytest pyyaml
+
+    - name: Run pytest tests
+      shell: bash
+      run: |
+        if [ -d "tests" ] && ls tests/*.py 2>/dev/null; then
+          python -m pytest tests/ -v
+        else
+          echo "No tests found, skipping pytest"
+        fi
+
+    - name: Validate YAML syntax
+      shell: bash
+      run: |
+        echo "Validating app metadata files..."
+        for app_dir in apps/*/; do
+          if [ -f "${app_dir}metadata.yaml" ]; then
+            echo "Checking ${app_dir}metadata.yaml"
+            python -c "import yaml; yaml.safe_load(open('${app_dir}metadata.yaml'))"
+          fi
+        done
+        echo "YAML validation passed"
