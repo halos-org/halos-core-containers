@@ -3,7 +3,10 @@
 # Custom script to handle SECRET_ENCRYPTION_KEY generation and asset-server config
 set -e
 
-PACKAGE_NAME="homarr-container"
+# Derive package name from script location
+# Script is at /var/lib/container-apps/<package-name>/prestart.sh
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PACKAGE_NAME="$(basename "$SCRIPT_DIR")"
 ETC_DIR="/etc/container-apps/${PACKAGE_NAME}"
 RUN_DIR="/run/container-apps/${PACKAGE_NAME}"
 RUNTIME_ENV="${RUN_DIR}/runtime.env"
