@@ -24,7 +24,7 @@ if command -v uvx >/dev/null 2>&1; then
             app_name=$(basename "$app_dir")
             echo "Building package for: $app_name"
             if ! uvx --from git+https://github.com/hatlabs/container-packaging-tools.git \
-                     generate-container-packages -o "$BUILD_DIR" "$app_dir"; then
+                     generate-container-packages -o "$BUILD_DIR" --prefix halos "$app_dir"; then
                 echo "ERROR: Failed to build package for $app_name" >&2
                 exit 1
             fi
