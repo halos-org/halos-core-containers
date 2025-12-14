@@ -1,6 +1,6 @@
 name: Homarr
 package_name: homarr-container
-version: 1.45.3-3
+version: 1.45.3-4
 upstream_version: 1.45.3
 description: Dashboard landing page for HaLOS
 long_description: |

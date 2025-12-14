@@ -33,3 +33,116 @@ runs:
           fi
         done
         echo "YAML validation passed"
+
+    - name: Start asset-server for security tests
+      shell: bash
+      run: |
+        # Create test environment
+        mkdir -p /tmp/homarr-test
+        mkdir -p /tmp/container-apps/test-container/data
+        mkdir -p /tmp/container-apps/test-container/assets
+        mkdir -p /tmp/pixmaps
+        mkdir -p /tmp/branding
+
+        # Create mock sensitive files (should NOT be accessible)
+        echo "SECRET_DATA" > /tmp/container-apps/test-container/env
+        echo "DB_CONTENT" > /tmp/container-apps/test-container/data/db.sqlite
+
+        # Create mock assets (SHOULD be accessible)
+        echo "ASSET_OK" > /tmp/container-apps/test-container/assets/test.txt
+        echo "ICON_OK" > /tmp/pixmaps/test-icon.png
+
+        # Create nginx config
+        cat > /tmp/homarr-test/nginx-assets.conf << 'EOF'
+        server {
+            listen 80;
+
+            location /icons/ {
+                alias /mnt/pixmaps/;
+                autoindex off;
+            }
+
+            location /branding/ {
+                alias /mnt/branding/;
+                autoindex off;
+            }
+
+            location ~ ^/([^/]+)/assets/(.*)$ {
+                alias /mnt/container-apps/$1/assets/$2;
+                autoindex off;
+            }
+        }
+        EOF
+
+        # Start asset-server container
+        docker run -d --name test-asset-server \
+          -p 8771:80 \
+          -v /tmp/pixmaps:/mnt/pixmaps:ro \
+          -v /tmp/branding:/mnt/branding:ro \
+          -v /tmp/container-apps:/mnt/container-apps:ro \
+          -v /tmp/homarr-test/nginx-assets.conf:/etc/nginx/conf.d/default.conf:ro \
+          nginx:alpine
+
+        # Wait for container to be ready
+        sleep 3
+        docker logs test-asset-server
+
+    - name: Run asset-server security tests
+      shell: bash
+      run: |
+        echo "=== Asset-Server Security Tests ==="
+
+        # Test 1: Icons endpoint should work
+        echo "Test 1: /icons/ endpoint..."
+        status=$(curl -s -o /dev/null -w '%{http_code}' http://localhost:8771/icons/test-icon.png)
+        if [ "$status" != "200" ]; then
+          echo "FAIL: /icons/test-icon.png returned $status (expected 200)"
+          exit 1
+        fi
+        echo "PASS: /icons/ endpoint works"
+
+        # Test 2: Per-container assets should work
+        echo "Test 2: /<container>/assets/ endpoint..."
+        status=$(curl -s -o /dev/null -w '%{http_code}' http://localhost:8771/test-container/assets/test.txt)
+        if [ "$status" != "200" ]; then
+          echo "FAIL: /test-container/assets/test.txt returned $status (expected 200)"
+          exit 1
+        fi
+        echo "PASS: /<container>/assets/ endpoint works"
+
+        # Test 3: SECURITY - env file should NOT be accessible
+        echo "Test 3: SECURITY - env file should be blocked..."
+        status=$(curl -s -o /dev/null -w '%{http_code}' http://localhost:8771/test-container/env)
+        if [ "$status" != "404" ]; then
+          echo "SECURITY FAIL: /test-container/env returned $status (expected 404)"
+          exit 1
+        fi
+        echo "PASS: env file correctly blocked"
+
+        # Test 4: SECURITY - data directory should NOT be accessible
+        echo "Test 4: SECURITY - data directory should be blocked..."
+        status=$(curl -s -o /dev/null -w '%{http_code}' http://localhost:8771/test-container/data/db.sqlite)
+        if [ "$status" != "404" ]; then
+          echo "SECURITY FAIL: /test-container/data/db.sqlite returned $status (expected 404)"
+          exit 1
+        fi
+        echo "PASS: data directory correctly blocked"
+
+        # Test 5: SECURITY - root of container should NOT be accessible
+        echo "Test 5: SECURITY - container root should be blocked..."
+        status=$(curl -s -o /dev/null -w '%{http_code}' http://localhost:8771/test-container/)
+        if [ "$status" != "404" ]; then
+          echo "SECURITY FAIL: /test-container/ returned $status (expected 404)"
+          exit 1
+        fi
+        echo "PASS: container root correctly blocked"
+
+        echo ""
+        echo "=== All security tests passed! ==="
+
+    - name: Cleanup test containers
+      if: always()
+      shell: bash
+      run: |
+        docker rm -f test-asset-server 2>/dev/null || true
+        rm -rf /tmp/homarr-test /tmp/container-apps /tmp/pixmaps /tmp/branding 2>/dev/null || true
