@@ -2,7 +2,7 @@ services:
   homarr:
     image: ghcr.io/homarr-labs/homarr:v1.45.3
     container_name: homarr
-    restart: no
+    restart: unless-stopped
     ports:
       - "80:7575"
     environment:
@@ -11,13 +11,14 @@ services:
       - /var/run/docker.sock:/var/run/docker.sock:ro
       - ${CONTAINER_DATA_ROOT}/data:/appdata
     logging:
+      driver: journald
       options:
-        max-size: 10m
+        tag: "{{.Name}}"
 
   asset-server:
     image: nginx:alpine
     container_name: homarr-asset-server
-    restart: no
+    restart: unless-stopped
     ports:
       - "8771:80"
     volumes:
@@ -26,5 +27,6 @@ services:
       - /var/lib/container-apps:/mnt/container-apps:ro
       - ${CONTAINER_DATA_ROOT}/nginx-assets.conf:/etc/nginx/conf.d/default.conf:ro
     logging:
+      driver: journald
       options:
-        max-size: 10m
+        tag: "{{.Name}}"
