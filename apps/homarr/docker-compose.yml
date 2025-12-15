@@ -3,6 +3,7 @@ services:
     image: ghcr.io/homarr-labs/homarr:v1.45.3
     container_name: homarr
     restart: unless-stopped
+    entrypoint: ["/custom-entrypoint.sh"]
     ports:
       - "80:7575"
     environment:
@@ -10,22 +11,12 @@ services:
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
       - ${CONTAINER_DATA_ROOT}/data:/appdata
-    logging:
-      driver: journald
-      options:
-        tag: "{{.Name}}"
-
-  asset-server:
-    image: nginx:alpine
-    container_name: homarr-asset-server
-    restart: unless-stopped
-    ports:
-      - "8771:80"
-    volumes:
-      - /usr/share/pixmaps:/mnt/pixmaps:ro
-      - /usr/share/halos-homarr-branding:/mnt/branding:ro
-      - /var/lib/container-apps:/mnt/container-apps:ro
-      - ./nginx-assets.conf:/etc/nginx/conf.d/default.conf:ro
+      # Custom entrypoint that patches nginx to serve local assets
+      - ./custom-entrypoint.sh:/custom-entrypoint.sh:ro
+      # Asset volumes (served via patched nginx)
+      - /usr/share/pixmaps:/usr/share/pixmaps:ro
+      - /usr/share/halos-homarr-branding:/usr/share/halos-homarr-branding:ro
+      - /var/lib/container-apps:/var/lib/container-apps:ro
     logging:
       driver: journald
       options:
