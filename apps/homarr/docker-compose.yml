@@ -25,7 +25,7 @@ services:
       - /usr/share/pixmaps:/mnt/pixmaps:ro
       - /usr/share/halos-homarr-branding:/mnt/branding:ro
       - /var/lib/container-apps:/mnt/container-apps:ro
-      - ${CONTAINER_DATA_ROOT}/nginx-assets.conf:/etc/nginx/conf.d/default.conf:ro
+      - ./assets/nginx-assets.conf:/etc/nginx/conf.d/default.conf:ro
     logging:
       driver: journald
       options:
