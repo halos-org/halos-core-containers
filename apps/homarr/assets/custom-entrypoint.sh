@@ -15,8 +15,13 @@ TEMPLATE="/etc/nginx/templates/nginx.conf"
 if [ -f "$TEMPLATE" ] && ! grep -q "location /icons/" "$TEMPLATE"; then
     echo "Patching nginx template to serve local assets..."
 
-    # Use awk to insert location blocks before "location / {"
+    # Use awk to insert mime.types and location blocks
     awk '
+    /http \{/ {
+        print
+        print "    include /etc/nginx/mime.types;"
+        next
+    }
     /location \/ \{/ {
         print ""
         print "        # HaLOS: Serve system icons from /usr/share/pixmaps"

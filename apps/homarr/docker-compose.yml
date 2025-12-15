@@ -4,6 +4,7 @@ services:
     container_name: homarr
     restart: unless-stopped
     entrypoint: ["/custom-entrypoint.sh"]
+    command: ["sh", "run.sh"]
     ports:
       - "80:7575"
     environment:
