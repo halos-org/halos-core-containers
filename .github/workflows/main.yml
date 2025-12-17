@@ -5,6 +5,10 @@ on:
     branches: [main]
   workflow_dispatch:
 
+concurrency:
+  group: ${{ github.repository }}-main-release
+  cancel-in-progress: false
+
 jobs:
   build-release:
     uses: hatlabs/shared-workflows/.github/workflows/build-release.yml@main
