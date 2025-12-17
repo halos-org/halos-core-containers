@@ -7,6 +7,8 @@ services:
     command: ["sh", "run.sh"]
     ports:
       - "80:7575"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     environment:
       - SECRET_ENCRYPTION_KEY=${SECRET_ENCRYPTION_KEY}
     volumes:
