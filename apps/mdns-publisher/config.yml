@@ -1,0 +1,17 @@
+version: "1.0"
+
+# mDNS Publisher configuration
+# The domain can be customized, but .local is the standard mDNS TLD.
+
+groups:
+  - id: mdns
+    label: mDNS Settings
+    description: Configure mDNS subdomain advertising
+    fields:
+      - id: HALOS_DOMAIN
+        label: Domain
+        type: string
+        default: halos.local
+        description: |
+          The domain suffix for mDNS advertising.
+          The default 'halos.local' works with standard mDNS implementations.

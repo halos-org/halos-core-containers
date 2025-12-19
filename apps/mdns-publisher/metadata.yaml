@@ -1,0 +1,34 @@
+name: mDNS Publisher
+app_id: mdns-publisher
+version: 0.1.0-1
+upstream_version: 0.1.0
+description: Advertises HaLOS subdomains via mDNS/Avahi
+long_description: |
+  The mDNS Publisher automatically advertises HaLOS application subdomains
+  on the local network via Avahi/mDNS. This enables browsers to resolve
+  addresses like auth.halos.local without requiring DNS infrastructure.
+
+  The publisher monitors Docker containers for the `halos.subdomain` label
+  and dynamically registers/unregisters mDNS records as containers start
+  and stop.
+
+  Features:
+  - Automatic subdomain discovery from Docker labels
+  - Dynamic registration/unregistration
+  - Works on standard home networks with mDNS support
+  - Zero configuration required
+homepage: https://github.com/hatlabs/halos-core-containers
+maintainer: Hat Labs <support@hatlabs.fi>
+license: MIT
+tags:
+  - role::container-app
+  - field::core
+  - category::infrastructure
+  - network::mdns
+debian_section: net
+architecture: all
+depends:
+  - docker-ce (>= 20.10) | docker.io (>= 20.10)
+  - traefik-container
+web_ui:
+  enabled: false
