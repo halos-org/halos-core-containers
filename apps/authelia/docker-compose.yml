@@ -1,0 +1,26 @@
+services:
+  authelia:
+    image: authelia/authelia:4.39
+    container_name: authelia
+    restart: unless-stopped
+    volumes:
+      - ${CONTAINER_DATA_ROOT}/data:/data
+    environment:
+      - TZ=${TZ:-UTC}
+    networks:
+      - proxy
+    labels:
+      - traefik.enable=true
+      - traefik.http.routers.authelia.rule=Host(`auth.${HALOS_DOMAIN:-halos.local}`)
+      - traefik.http.routers.authelia.entrypoints=web
+      - traefik.http.services.authelia.loadbalancer.server.port=9091
+      - halos.subdomain=auth
+    logging:
+      driver: journald
+      options:
+        tag: "{{.Name}}"
+
+networks:
+  proxy:
+    name: halos-proxy-network
+    external: true
