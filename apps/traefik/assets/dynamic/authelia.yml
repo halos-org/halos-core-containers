@@ -1,0 +1,15 @@
+# Authelia ForwardAuth Middleware Configuration
+# This file defines the ForwardAuth middleware for Authelia integration.
+# It is loaded by Traefik's file provider.
+
+http:
+  middlewares:
+    authelia:
+      forwardAuth:
+        address: "http://authelia:9091/api/authz/forward-auth"
+        trustForwardHeader: true
+        authResponseHeaders:
+          - Remote-User
+          - Remote-Groups
+          - Remote-Email
+          - Remote-Name
