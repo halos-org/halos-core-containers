@@ -15,7 +15,7 @@ long_description: |
   - Dynamic configuration updates without restart
   - Built-in dashboard for monitoring (internal only)
 homepage: https://traefik.io/
-maintainer: Hat Labs <support@hatlabs.fi>
+maintainer: Matti Airas <matti.airas@hatlabs.fi>
 license: MIT
 tags:
   - role::container-app
