@@ -7,8 +7,6 @@ services:
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
       - /var/run/dbus:/var/run/dbus
-    environment:
-      - HALOS_DOMAIN=${HALOS_DOMAIN:-halos.local}
     logging:
       driver: journald
       options:
