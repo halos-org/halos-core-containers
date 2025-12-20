@@ -48,9 +48,9 @@ echo "HOMARR_URL=$HOMARR_URL" >> "$RUNTIME_ENV"
 # Configure SSO with Authelia (enabled by default)
 echo "Configuring SSO with Authelia..."
 
-# Enable OIDC authentication
+# Enable both credentials (for adapter) and OIDC (for users) authentication
 if ! grep -q "^AUTH_PROVIDERS=" "${ENV_FILE}" 2>/dev/null; then
-    echo "AUTH_PROVIDERS=\"oidc\"" >> "${ENV_FILE}"
+    echo "AUTH_PROVIDERS=\"credentials,oidc\"" >> "${ENV_FILE}"
 fi
 
 # Set OIDC issuer URL
