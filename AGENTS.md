@@ -62,16 +62,18 @@ Individual apps in `apps/` have their own versions in `metadata.yaml`. These are
 
 ```
 halos-core-containers/
-├── apps/
-│   └── homarr/
-│       ├── docker-compose.yml
-│       ├── config.yml
-│       ├── metadata.yaml
-│       └── icon.png
+├── apps/                       # Container app definitions
+│   ├── homarr/
+│   ├── traefik/
+│   └── authelia/
+├── docker/                     # Docker build environment
+│   ├── Dockerfile.debtools
+│   └── docker-compose.debtools.yml
 ├── tools/
-│   └── build-all.sh         # Build all packages
+│   └── build-all.sh           # Build script (called by ./run)
 ├── .github/workflows/
-│   └── main.yml             # CI/CD
+│   └── main.yml               # CI/CD
+├── run                        # Development commands (use this!)
 └── README.md
 ```
 
@@ -79,8 +81,9 @@ halos-core-containers/
 
 1. Create `apps/<app-name>/` directory
 2. Add `docker-compose.yml`, `config.yml`, `metadata.yaml`, `icon.png`
-3. Test locally with `generate-container-packages`
-4. Create PR - CI will build and validate
+3. Build and test locally with `./run build <app-name>`
+4. Deploy to test device with `./run deploy halos.local <app-name>`
+5. Create PR - CI will build and validate
 
 ### App Definition Files
 
@@ -89,16 +92,63 @@ halos-core-containers/
 - **config.yml**: User-configurable settings (optional)
 - **icon.png**: Application icon (256x256, PNG format)
 
-## Building
+## Local Development
 
-**Requirements**: `container-packaging-tools` installed
+**IMPORTANT**: Local development MUST use the `./run` script. This ensures consistent builds across all platforms (including macOS) by using a Docker-based build environment.
+
+### First-time Setup
+
+```bash
+# Build the debtools Docker image (required once)
+./run build-debtools
+```
+
+### Building Packages
 
 ```bash
 # Build all packages
-./tools/build-all.sh
+./run build-all
+
+# Build a specific app
+./run build homarr
+./run build traefik
+./run build authelia
 
 # Output: build/*.deb
 ```
+
+### Deploying for Testing
+
+```bash
+# Deploy all packages to a remote host
+./run deploy halos.local
+
+# Deploy a specific app
+./run deploy halos.local homarr
+```
+
+### Other Commands
+
+```bash
+# Open interactive shell in build container
+./run shell
+
+# List available apps
+./run list-apps
+
+# Clean build artifacts
+./run clean
+
+# Show help
+./run help
+```
+
+### Why Docker?
+
+- `dpkg-buildpackage` is not available on macOS
+- Ensures consistent Debian Trixie build environment
+- Matches CI/CD environment exactly
+- Prevents "works on my machine" issues
 
 **CI/CD**: GitHub Actions builds on push and creates releases.
 
