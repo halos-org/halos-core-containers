@@ -1,0 +1,37 @@
+name: Authelia
+app_id: authelia
+version: 4.39.15-1
+upstream_version: 4.39.15
+description: Identity provider for HaLOS Single Sign-On
+long_description: |
+  Authelia is a lightweight authentication and authorization server that
+  provides Single Sign-On (SSO) for HaLOS web applications.
+
+  Features:
+  - OpenID Connect (OIDC) provider for native application integration
+  - Forward Auth for applications without native OIDC support
+  - File-based user database (no external database required)
+  - Session management with secure cookies
+  - Low memory footprint (~30-50 MB RAM)
+
+  Authelia integrates with Traefik reverse proxy to provide unified
+  authentication across all HaLOS web interfaces.
+homepage: https://www.authelia.com/
+maintainer: Matti Airas <matti.airas@hatlabs.fi>
+license: Apache-2.0
+tags:
+  - role::container-app
+  - field::core
+  - category::security
+  - interface::web
+  - auth::oidc
+debian_section: admin
+architecture: all
+depends:
+  - docker-ce (>= 20.10) | docker.io (>= 20.10)
+  - halos-traefik-container
+web_ui:
+  enabled: true
+  port: 9091
+  path: /
+  protocol: http

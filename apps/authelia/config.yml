@@ -1,0 +1,17 @@
+version: "1.0"
+
+# Authelia configuration
+# Domain is automatically derived from the system hostname: <hostname>.local
+
+groups:
+  - id: general
+    label: General Settings
+    fields:
+      - id: TZ
+        label: Timezone
+        type: string
+        default: UTC
+        required: false
+        description: |
+          Timezone for Authelia logs and session timestamps.
+          Example: Europe/Helsinki, America/New_York
