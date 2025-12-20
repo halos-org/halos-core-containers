@@ -1,0 +1,6 @@
+version: "1.0"
+
+# Traefik configuration is managed automatically.
+# No user configuration required.
+
+groups: []
