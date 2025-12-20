@@ -18,7 +18,7 @@ long_description: |
   - Works on standard home networks with mDNS support
   - Zero configuration required
 homepage: https://github.com/hatlabs/halos-core-containers
-maintainer: Hat Labs <support@hatlabs.fi>
+maintainer: Matti Airas <matti.airas@hatlabs.fi>
 license: MIT
 tags:
   - role::container-app
