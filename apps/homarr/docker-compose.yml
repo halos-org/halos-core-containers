@@ -17,6 +17,9 @@ services:
       - AUTH_OIDC_CLIENT_NAME=${AUTH_OIDC_CLIENT_NAME:-}
       - AUTH_OIDC_SCOPE_OVERWRITE=${AUTH_OIDC_SCOPE_OVERWRITE:-}
       - AUTH_LOGOUT_REDIRECT_URL=${AUTH_LOGOUT_REDIRECT_URL}
+    ports:
+      # Expose to localhost only for homarr-container-adapter
+      - "127.0.0.1:7575:7575"
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
       - ${CONTAINER_DATA_ROOT}/data:/appdata
