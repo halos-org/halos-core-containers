@@ -5,12 +5,18 @@ services:
     restart: unless-stopped
     entrypoint: ["/custom-entrypoint.sh"]
     command: ["sh", "run.sh"]
-    ports:
-      - "80:7575"
     extra_hosts:
       - "host.docker.internal:host-gateway"
     environment:
       - SECRET_ENCRYPTION_KEY=${SECRET_ENCRYPTION_KEY}
+      # SSO/OIDC configuration (optional, set AUTH_PROVIDERS=oidc to enable)
+      - AUTH_PROVIDERS=${AUTH_PROVIDERS:-}
+      - AUTH_OIDC_ISSUER=${AUTH_OIDC_ISSUER}
+      - AUTH_OIDC_CLIENT_ID=${AUTH_OIDC_CLIENT_ID:-}
+      - AUTH_OIDC_CLIENT_SECRET=${AUTH_OIDC_CLIENT_SECRET:-}
+      - AUTH_OIDC_CLIENT_NAME=${AUTH_OIDC_CLIENT_NAME:-}
+      - AUTH_OIDC_SCOPE_OVERWRITE=${AUTH_OIDC_SCOPE_OVERWRITE:-}
+      - AUTH_LOGOUT_REDIRECT_URL=${AUTH_LOGOUT_REDIRECT_URL}
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
       - ${CONTAINER_DATA_ROOT}/data:/appdata
@@ -20,7 +26,19 @@ services:
       - /usr/share/pixmaps:/usr/share/pixmaps:ro
       - /usr/share/halos-homarr-branding:/usr/share/halos-homarr-branding:ro
       - /var/lib/container-apps:/var/lib/container-apps:ro
+    networks:
+      - proxy
+    labels:
+      - traefik.enable=true
+      - traefik.http.routers.homarr.rule=Host(`${HALOS_DOMAIN}`)
+      - traefik.http.routers.homarr.entrypoints=web
+      - traefik.http.services.homarr.loadbalancer.server.port=7575
     logging:
       driver: journald
       options:
         tag: "{{.Name}}"
+
+networks:
+  proxy:
+    name: halos-proxy-network
+    external: true
