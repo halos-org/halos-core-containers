@@ -14,8 +14,8 @@ set -a
 [ -f "${ETC_DIR}/env" ] && . "${ETC_DIR}/env"
 set +a
 
-ASSETS_DIR="${SCRIPT_DIR}/assets"
 DATA_DIR="${CONTAINER_DATA_ROOT}/data"
+TEMPLATE_FILE="${SCRIPT_DIR}/configuration.yml.template"
 SECRETS_FILE="${DATA_DIR}/secrets.env"
 CONFIG_FILE="${DATA_DIR}/configuration.yml"
 
@@ -69,7 +69,7 @@ process_template() {
 
     # Read template
     local template
-    template=$(cat "${ASSETS_DIR}/configuration.yml.template")
+    template=$(cat "${TEMPLATE_FILE}")
 
     # Indent private key for YAML (8 spaces)
     local indented_key
