@@ -29,7 +29,7 @@ debian_section: admin
 architecture: all
 depends:
   - docker-ce (>= 20.10) | docker.io (>= 20.10)
-  - traefik-container
+  - halos-traefik-container
 web_ui:
   enabled: true
   port: 9091
