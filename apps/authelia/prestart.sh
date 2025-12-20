@@ -59,8 +59,9 @@ fi
 . "${SECRETS_FILE}"
 OIDC_PRIVATE_KEY=$(cat "${DATA_DIR}/oidc_private_key.pem")
 
-# Set domain default
-HALOS_DOMAIN="${HALOS_DOMAIN:-halos.local}"
+# Auto-detect domain from hostname (matches mDNS publisher)
+HOSTNAME_SHORT=$(hostname -s 2>/dev/null || hostname | cut -d. -f1)
+HALOS_DOMAIN="${HOSTNAME_SHORT}.local"
 
 # Process configuration template
 process_template() {

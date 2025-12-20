@@ -1,20 +1,12 @@
 version: "1.0"
 
 # Authelia configuration
-# Most settings are managed automatically. Domain can be customized.
+# Domain is automatically derived from the system hostname: <hostname>.local
 
 groups:
   - id: general
     label: General Settings
     fields:
-      - id: HALOS_DOMAIN
-        label: Domain
-        type: string
-        default: halos.local
-        description: |
-          The domain for Authelia cookies and redirects.
-          Must match the domain used by Traefik and mDNS publisher.
-
       - id: TZ
         label: Timezone
         type: string
