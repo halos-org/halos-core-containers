@@ -1,6 +1,6 @@
 name: Homarr
 app_id: homarr
-version: 1.45.3-8
+version: 1.45.3-9
 upstream_version: 1.45.3
 description: Dashboard landing page for HaLOS
 long_description: |
@@ -28,10 +28,13 @@ debian_section: web
 architecture: all
 depends:
   - docker-ce (>= 20.10) | docker.io (>= 20.10)
+  - halos-traefik-container
+recommends:
+  - halos-authelia-container
 web_ui:
   enabled: true
   path: /
-  port: 80
+  port: 7575
   protocol: http
 default_config:
   SECRET_ENCRYPTION_KEY: ""
