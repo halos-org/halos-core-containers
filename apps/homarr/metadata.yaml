@@ -28,9 +28,9 @@ debian_section: web
 architecture: all
 depends:
   - docker-ce (>= 20.10) | docker.io (>= 20.10)
-  - traefik-container
+  - halos-traefik-container
 recommends:
-  - authelia-container
+  - halos-authelia-container
 web_ui:
   enabled: true
   path: /
