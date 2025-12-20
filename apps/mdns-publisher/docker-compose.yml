@@ -1,0 +1,13 @@
+services:
+  mdns-publisher:
+    image: ghcr.io/hatlabs/halos-mdns-publisher:0.1.0
+    container_name: mdns-publisher
+    restart: unless-stopped
+    network_mode: host
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - /var/run/dbus:/var/run/dbus
+    logging:
+      driver: journald
+      options:
+        tag: "{{.Name}}"
