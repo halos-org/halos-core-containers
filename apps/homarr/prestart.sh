@@ -23,7 +23,8 @@ mkdir -p "$(dirname "$RUNTIME_ENV")"
 
 # Initialize Homarr database from seed if not present
 # The seed database contains pre-configured settings and bootstrap API key
-HOMARR_DB="${DATA_DIR}/data/db.sqlite3"
+# Note: Homarr v1.x uses /appdata/db/db.sqlite inside container
+HOMARR_DB="${DATA_DIR}/data/db/db.sqlite"
 if [ ! -f "$HOMARR_DB" ] && [ -f "$SEED_DB" ]; then
     echo "Initializing Homarr database from seed..."
     mkdir -p "$(dirname "$HOMARR_DB")"
