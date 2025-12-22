@@ -11,7 +11,7 @@ log:
 
 authentication_backend:
   file:
-    path: /data/users_database.yml
+    path: /config/users_database.yml
     password:
       algorithm: argon2id
       argon2:
@@ -26,16 +26,21 @@ session:
   secret: '${SESSION_SECRET}'
   cookies:
     - domain: '${HALOS_DOMAIN}'
-      authelia_url: 'http://auth.${HALOS_DOMAIN}'
-      default_redirection_url: 'http://${HALOS_DOMAIN}'
+      authelia_url: 'https://auth.${HALOS_DOMAIN}'
+      default_redirection_url: 'https://${HALOS_DOMAIN}'
 
 storage:
+  encryption_key: '${STORAGE_ENCRYPTION_KEY}'
   local:
-    path: /data/db.sqlite3
+    path: /config/db.sqlite3
+
+identity_validation:
+  reset_password:
+    jwt_secret: '${RESET_PASSWORD_JWT_SECRET}'
 
 notifier:
   filesystem:
-    filename: /data/notification.txt
+    filename: /config/notification.txt
 
 access_control:
   default_policy: one_factor
@@ -49,15 +54,15 @@ identity_providers:
     clients:
       - client_id: homarr
         client_name: Homarr Dashboard
-        client_secret: '${HOMARR_CLIENT_SECRET}'
+        client_secret: '${HOMARR_CLIENT_SECRET_HASH}'
         public: false
         authorization_policy: one_factor
         redirect_uris:
-          - 'http://${HALOS_DOMAIN}/api/auth/callback/oidc'
+          - 'https://${HALOS_DOMAIN}/api/auth/callback/oidc'
         scopes:
           - openid
           - profile
           - groups
           - email
         consent_mode: implicit
-        token_endpoint_auth_method: client_secret_post
+        token_endpoint_auth_method: client_secret_basic

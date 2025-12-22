@@ -35,3 +35,4 @@ web_ui:
   port: 9091
   path: /
   protocol: http
+  visible: false

@@ -36,5 +36,6 @@ web_ui:
   path: /
   port: 7575
   protocol: http
+  visible: false
 default_config:
   SECRET_ENCRYPTION_KEY: ""

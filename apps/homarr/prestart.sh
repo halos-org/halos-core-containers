@@ -1,6 +1,6 @@
 #!/bin/bash
 # Prestart script for homarr-container
-# Handles SECRET_ENCRYPTION_KEY generation and SSO configuration
+# Handles SECRET_ENCRYPTION_KEY generation, seed database, and SSO configuration
 set -e
 
 # Derive package name from script location
@@ -10,12 +10,27 @@ ETC_DIR="/etc/container-apps/${PACKAGE_NAME}"
 RUN_DIR="/run/container-apps/${PACKAGE_NAME}"
 RUNTIME_ENV="${RUN_DIR}/runtime.env"
 ENV_FILE="${ETC_DIR}/env"
+DATA_DIR="/var/lib/container-apps/${PACKAGE_NAME}/data"
+
+# Seed database from halos-homarr-branding
+SEED_DB="/var/lib/halos-homarr-branding/db-seed.sqlite3"
 
 # Authelia secrets location
 AUTHELIA_SECRETS="/var/lib/container-apps/authelia-container/data/secrets.env"
 
 # Create runtime directory
 mkdir -p "$(dirname "$RUNTIME_ENV")"
+
+# Initialize Homarr database from seed if not present
+# The seed database contains pre-configured settings and bootstrap API key
+HOMARR_DB="${DATA_DIR}/data/db.sqlite3"
+if [ ! -f "$HOMARR_DB" ] && [ -f "$SEED_DB" ]; then
+    echo "Initializing Homarr database from seed..."
+    mkdir -p "$(dirname "$HOMARR_DB")"
+    cp "$SEED_DB" "$HOMARR_DB"
+    chmod 644 "$HOMARR_DB"
+    echo "Homarr database initialized with pre-configured settings"
+fi
 
 # Load config values from env files
 set -a
@@ -42,20 +57,21 @@ if ! grep -q "^HALOS_DOMAIN=" "${ENV_FILE}" 2>/dev/null; then
 fi
 
 # Compute Homarr URL (goes through Traefik)
-HOMARR_URL="http://${HALOS_DOMAIN}/"
+HOMARR_URL="https://${HALOS_DOMAIN}/"
 echo "HOMARR_URL=$HOMARR_URL" >> "$RUNTIME_ENV"
 
 # Configure SSO with Authelia (enabled by default)
 echo "Configuring SSO with Authelia..."
 
-# Enable both credentials (for adapter) and OIDC (for users) authentication
+# Enable OIDC-only authentication (no credentials login)
+# The homarr-container-adapter uses API key authentication instead
 if ! grep -q "^AUTH_PROVIDERS=" "${ENV_FILE}" 2>/dev/null; then
-    echo "AUTH_PROVIDERS=\"credentials,oidc\"" >> "${ENV_FILE}"
+    echo "AUTH_PROVIDERS=\"oidc\"" >> "${ENV_FILE}"
 fi
 
 # Set OIDC issuer URL
 if ! grep -q "^AUTH_OIDC_ISSUER=" "${ENV_FILE}" 2>/dev/null; then
-    echo "AUTH_OIDC_ISSUER=\"http://auth.${HALOS_DOMAIN}\"" >> "${ENV_FILE}"
+    echo "AUTH_OIDC_ISSUER=\"https://auth.${HALOS_DOMAIN}\"" >> "${ENV_FILE}"
 fi
 
 # Set client ID
@@ -92,7 +108,7 @@ fi
 
 # Set logout redirect URL
 if ! grep -q "^AUTH_LOGOUT_REDIRECT_URL=" "${ENV_FILE}" 2>/dev/null; then
-    echo "AUTH_LOGOUT_REDIRECT_URL=\"http://auth.${HALOS_DOMAIN}/logout\"" >> "${ENV_FILE}"
+    echo "AUTH_LOGOUT_REDIRECT_URL=\"https://auth.${HALOS_DOMAIN}/logout\"" >> "${ENV_FILE}"
 fi
 
 echo "Homarr prestart complete"
