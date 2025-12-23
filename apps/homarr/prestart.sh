@@ -1,6 +1,6 @@
 #!/bin/bash
 # Prestart script for homarr-container
-# Handles SECRET_ENCRYPTION_KEY generation, seed database, and SSO configuration
+# Handles SECRET_ENCRYPTION_KEY generation, seed database, OIDC client registration, and SSO configuration
 set -e
 
 # Derive package name from script location
@@ -12,14 +12,18 @@ RUNTIME_ENV="${RUN_DIR}/runtime.env"
 ENV_FILE="${ETC_DIR}/env"
 DATA_DIR="/var/lib/container-apps/${PACKAGE_NAME}/data"
 
+# OIDC client configuration
+OIDC_CLIENTS_DIR="/etc/halos/oidc-clients.d"
+OIDC_SECRET_FILE="${DATA_DIR}/oidc-secret"
+OIDC_SNIPPET_SRC="${SCRIPT_DIR}/oidc-client.yml"
+OIDC_SNIPPET_DST="${OIDC_CLIENTS_DIR}/homarr.yml"
+
 # Seed database from halos-homarr-branding
 SEED_DB="/var/lib/halos-homarr-branding/db-seed.sqlite3"
 
-# Authelia secrets location
-AUTHELIA_SECRETS="/var/lib/container-apps/authelia-container/data/secrets.env"
-
 # Create runtime directory
 mkdir -p "$(dirname "$RUNTIME_ENV")"
+mkdir -p "${DATA_DIR}"
 
 # Initialize Homarr database from seed if not present
 # The seed database contains pre-configured settings and bootstrap API key
@@ -61,7 +65,37 @@ fi
 HOMARR_URL="https://${HALOS_DOMAIN}/"
 echo "HOMARR_URL=$HOMARR_URL" >> "$RUNTIME_ENV"
 
-# Configure SSO with Authelia (enabled by default)
+# ============================================
+# OIDC Client Registration
+# ============================================
+echo "Setting up OIDC client registration..."
+
+# Generate OIDC client secret if it doesn't exist
+if [ ! -f "${OIDC_SECRET_FILE}" ]; then
+    echo "Generating OIDC client secret..."
+    openssl rand -hex 32 > "${OIDC_SECRET_FILE}"
+    chmod 600 "${OIDC_SECRET_FILE}"
+    echo "OIDC client secret generated at ${OIDC_SECRET_FILE}"
+fi
+
+# Read the client secret for environment configuration
+OIDC_CLIENT_SECRET=$(cat "${OIDC_SECRET_FILE}")
+
+# Install OIDC client snippet to the .d directory
+# Create directory if it doesn't exist (idempotent, avoids race condition with Authelia)
+mkdir -p "${OIDC_CLIENTS_DIR}"
+
+if [ -f "${OIDC_SNIPPET_SRC}" ]; then
+    echo "Installing OIDC client snippet to ${OIDC_SNIPPET_DST}"
+    cp "${OIDC_SNIPPET_SRC}" "${OIDC_SNIPPET_DST}"
+    chmod 644 "${OIDC_SNIPPET_DST}"
+else
+    echo "WARNING: OIDC snippet source not found at ${OIDC_SNIPPET_SRC}"
+fi
+
+# ============================================
+# SSO Configuration for Homarr
+# ============================================
 echo "Configuring SSO with Authelia..."
 
 # Enable OIDC-only authentication (no credentials login)
@@ -80,21 +114,10 @@ if ! grep -q "^AUTH_OIDC_CLIENT_ID=" "${ENV_FILE}" 2>/dev/null; then
     echo "AUTH_OIDC_CLIENT_ID=\"homarr\"" >> "${ENV_FILE}"
 fi
 
-# Get client secret from Authelia
+# Set client secret (use our generated secret)
 if ! grep -q "^AUTH_OIDC_CLIENT_SECRET=" "${ENV_FILE}" 2>/dev/null; then
-    if [ -f "$AUTHELIA_SECRETS" ]; then
-        # Source Authelia secrets to get HOMARR_CLIENT_SECRET
-        . "$AUTHELIA_SECRETS"
-        if [ -n "$HOMARR_CLIENT_SECRET" ]; then
-            echo "AUTH_OIDC_CLIENT_SECRET=\"${HOMARR_CLIENT_SECRET}\"" >> "${ENV_FILE}"
-            echo "Retrieved OIDC client secret from Authelia"
-        else
-            echo "WARNING: HOMARR_CLIENT_SECRET not found in Authelia secrets"
-        fi
-    else
-        echo "WARNING: Authelia secrets file not found at $AUTHELIA_SECRETS"
-        echo "SSO will not work until Authelia is installed and configured"
-    fi
+    echo "AUTH_OIDC_CLIENT_SECRET=\"${OIDC_CLIENT_SECRET}\"" >> "${ENV_FILE}"
+    echo "Configured OIDC client secret"
 fi
 
 # Set provider display name

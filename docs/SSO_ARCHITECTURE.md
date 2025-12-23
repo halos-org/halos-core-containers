@@ -1,31 +1,37 @@
 # HaLOS SSO - System Architecture
 
-**Version**: 1.0
-**Date**: 2025-12-19
+**Version**: 2.0
+**Date**: 2025-12-23
 **Status**: Draft
 
 ## System Overview
 
-The SSO architecture consists of four primary components working together to provide unified authentication for HaLOS web applications.
+The SSO architecture provides unified authentication for all HaLOS web applications. Applications are accessed via subdomains and protected by either Forward Auth (default) or OIDC.
 
 ```
-                         mDNS/Avahi (*.halos.local)
-                                   │
-                                   v
-┌──────────────────────────────────────────────────────────────┐
-│                    Traefik (Port 80)                         │
-│  - Docker provider (label-based routing)                     │
-│  - Shared network: halos-proxy-network                       │
-└──────────────────────────────────────────────────────────────┘
-              │                    │                    │
-              v                    v                    v
-        ┌──────────┐        ┌────────────┐      ┌─────────────┐
-        │  Homarr  │        │  Authelia  │      │ mDNS-Pub    │
-        │  (OIDC)  │        │  (OIDC+FA) │      │ (host net)  │
-        └──────────┘        └────────────┘      └─────────────┘
-              ^                    │
-              └────────────────────┘
-                   OIDC redirect
+                      mDNS/Avahi (*.{hostname}.local)
+                                  │
+                                  v
+┌─────────────────────────────────────────────────────────────────┐
+│                     Traefik (Port 80, 443)                      │
+│  - Docker provider (label-based routing)                        │
+│  - ForwardAuth middleware for protected apps                    │
+│  - Shared network: halos-proxy-network                          │
+└─────────────────────────────────────────────────────────────────┘
+         │              │              │              │
+         v              v              v              v
+   ┌──────────┐   ┌──────────┐   ┌──────────┐   ┌──────────┐
+   │  Homarr  │   │ Grafana  │   │ InfluxDB │   │ Signal K │
+   │  (OIDC)  │   │ (FwdAuth)│   │ (FwdAuth)│   │(host net)│
+   └──────────┘   └──────────┘   └──────────┘   └──────────┘
+         │              │              │              │
+         └──────────────┴──────────────┴──────────────┘
+                                  │
+                                  v
+                          ┌────────────┐
+                          │  Authelia  │
+                          │ (OIDC+FA)  │
+                          └────────────┘
 ```
 
 ## Components
@@ -34,20 +40,21 @@ The SSO architecture consists of four primary components working together to pro
 
 **Image**: `traefik:v3.6`
 **Network**: `halos-proxy-network` (bridge, owned by this container)
-**Ports**: 80 (HTTP), 443 (reserved for future HTTPS)
+**Ports**: 80 (HTTP), 443 (HTTPS)
 
-Traefik is the central routing component. It receives all incoming HTTP requests and routes them to the appropriate backend container based on the `Host` header.
+Traefik is the central routing component. It receives all incoming HTTP/HTTPS requests and routes them to the appropriate backend based on the `Host` header.
 
 **Key responsibilities**:
 - Create and own the shared Docker network
 - Watch Docker daemon for container labels
 - Route requests based on `Host` header rules
-- Provide ForwardAuth middleware for protected routes
+- Apply ForwardAuth middleware for protected routes
+- TLS termination for HTTPS
 
 **Configuration approach**:
 - Static configuration loaded from mounted file
-- Dynamic configuration from Docker labels
-- Additional dynamic configuration from file provider (for Authelia middleware)
+- Dynamic configuration from Docker labels (per-app routing)
+- File provider for Authelia middleware and per-app middleware customizations
 
 ### Authelia Identity Provider
 
@@ -63,10 +70,16 @@ Authelia provides both OIDC provider and Forward Auth functionality.
 - Provide Forward Auth endpoint for non-OIDC applications
 - Manage user sessions with secure cookies
 
+**Configuration files**:
+- `configuration.yml` - Base configuration (session, auth backend, access control)
+- `oidc-clients.yml` - OIDC client definitions (regenerated when apps change)
+- `users_database.yml` - User credentials (argon2id hashes)
+
+**Note**: `configuration.yml` is regenerated from a template on every Authelia restart to handle hostname/domain changes. Manual edits to this file will be overwritten. For customization, modify the template in the package or use environment variable overrides where supported.
+
 **Data storage**:
-- User database: YAML file with usernames and argon2id password hashes
 - Session data: SQLite database
-- Configuration: YAML file with OIDC client definitions
+- OIDC keys: RSA private key for JWT signing
 
 ### mDNS Publisher
 
@@ -89,25 +102,38 @@ The mDNS publisher enables subdomain resolution on local networks without DNS in
 - One `avahi-publish` process per subdomain
 - Process management via shell job control
 
-### Homarr Dashboard (Modified)
+### Application Containers
 
-**Image**: `ghcr.io/homarr-labs/homarr:v1.45+`
-**Network**: `halos-proxy-network` (external)
-**Ports**: None exposed (accessed via Traefik)
+Applications integrate with SSO based on their declared authentication mode:
 
-The existing Homarr container is modified to work with the SSO infrastructure.
+**Forward Auth apps** (default):
+- Join `halos-proxy-network`
+- Traefik labels for routing
+- ForwardAuth middleware applied automatically
+- Receive user identity via HTTP headers
 
-**Key changes**:
-- Remove direct port binding
-- Add Traefik routing labels
-- Join shared proxy network
-- Add OIDC configuration via environment variables
+**OIDC apps** (e.g., Homarr):
+- Join `halos-proxy-network`
+- Traefik labels for routing (no ForwardAuth middleware)
+- OIDC client registered in Authelia
+- Handle OIDC flow directly with Authelia
+
+**No-auth apps**:
+- Join `halos-proxy-network`
+- Traefik labels for routing (no middleware)
+- Publicly accessible on LAN
+
+**Host networking apps** (e.g., Signal K):
+- Use `network_mode: host`
+- Traefik routes to host IP:port
+- Can still use ForwardAuth or no-auth
+- Also accessible via direct port
 
 ## Network Architecture
 
 ### halos-proxy-network
 
-A Docker bridge network created and owned by the Traefik container. All containers that need to be accessible via Traefik must join this network.
+A Docker bridge network created and owned by the Traefik container.
 
 **Properties**:
 - Driver: bridge
@@ -117,67 +143,231 @@ A Docker bridge network created and owned by the Traefik container. All containe
 **Membership**:
 - traefik (owner)
 - authelia (member)
-- homarr (member)
-- future applications (members)
+- All proxied application containers (members)
 
-### Host Network (mDNS Publisher only)
+### Host Network Access
 
-The mDNS publisher requires host network mode to access the Avahi daemon running on the host system. This is the only container that uses host networking.
+Two cases require host network interaction:
+1. **mDNS Publisher**: Uses host network mode to access Avahi daemon
+2. **Host networking apps**: Traefik routes to `host.docker.internal` or host IP
 
-## Data Flow
+## Data Flows
 
-### Initial Page Load
+### Forward Auth Flow
 
-1. User enters `halos.local` in browser
-2. mDNS resolves hostname to device IP address
-3. Browser sends HTTP request to port 80
-4. Traefik receives request, matches `Host: halos.local`
-5. Traefik routes to Homarr container
-6. Homarr detects no session, redirects to Authelia
+Most applications use Forward Auth for authentication:
 
-### OIDC Authentication
+```
+┌────────┐     ┌─────────┐     ┌──────────┐     ┌─────────┐
+│ Browser│────>│ Traefik │────>│ Authelia │     │   App   │
+└────────┘     └─────────┘     └──────────┘     └─────────┘
+     │              │               │                │
+     │  1. GET grafana.boat.local   │                │
+     │─────────────>│               │                │
+     │              │ 2. ForwardAuth│                │
+     │              │──────────────>│                │
+     │              │   3. 401 + redirect            │
+     │              │<──────────────│                │
+     │  4. Redirect to auth.boat.local               │
+     │<─────────────│               │                │
+     │  5. Login form               │                │
+     │─────────────────────────────>│                │
+     │  6. POST credentials         │                │
+     │─────────────────────────────>│                │
+     │  7. Set session cookie + redirect             │
+     │<─────────────────────────────│                │
+     │  8. GET grafana.boat.local (with cookie)      │
+     │─────────────>│               │                │
+     │              │ 9. ForwardAuth│                │
+     │              │──────────────>│                │
+     │              │  10. 200 + headers             │
+     │              │<──────────────│                │
+     │              │ 11. Forward with Remote-User   │
+     │              │───────────────────────────────>│
+     │              │               │   12. Response │
+     │              │<───────────────────────────────│
+     │ 13. Response │               │                │
+     │<─────────────│               │                │
+```
 
-1. Homarr redirects to `http://auth.halos.local/api/oidc/authorization`
-2. Authelia presents login form
-3. User enters credentials
-4. Authelia validates against user database
-5. Authelia redirects to `http://halos.local/api/auth/callback/oidc` with code
-6. Homarr exchanges code for tokens via back-channel to Authelia
-7. Homarr creates local session, redirects to dashboard
+### OIDC Flow
 
-### Subsequent Requests
+Applications with native OIDC support (e.g., Homarr):
 
-1. User makes request with session cookie
-2. Traefik routes to Homarr
-3. Homarr validates session, serves content
+```
+┌────────┐     ┌─────────┐     ┌──────────┐     ┌─────────┐
+│ Browser│────>│ Traefik │────>│ Authelia │     │ Homarr  │
+└────────┘     └─────────┘     └──────────┘     └─────────┘
+     │              │               │                │
+     │  1. GET boat.local           │                │
+     │─────────────>│───────────────────────────────>│
+     │              │               │  2. No session │
+     │  3. Redirect to auth.boat.local/oidc/auth     │
+     │<──────────────────────────────────────────────│
+     │  4. Authorization request    │                │
+     │─────────────────────────────>│                │
+     │  5. Login (if no session)    │                │
+     │<────────────────────────────>│                │
+     │  6. Redirect with auth code  │                │
+     │<─────────────────────────────│                │
+     │  7. GET boat.local/callback?code=...          │
+     │─────────────>│───────────────────────────────>│
+     │              │               │  8. Token exchange
+     │              │               │<───────────────│
+     │              │               │  9. Tokens     │
+     │              │               │───────────────>│
+     │              │               │ 10. Create session
+     │ 11. Redirect to dashboard    │                │
+     │<──────────────────────────────────────────────│
+```
 
-## Technology Stack
+### Host Networking App Flow
 
-### Reverse Proxy: Traefik v3.5
+For apps like Signal K that require host networking:
 
-**Rationale**: Traefik is chosen over alternatives (nginx, Caddy) because:
-- Native Docker integration with label-based configuration
-- Built-in ForwardAuth middleware
-- Low memory footprint (~15-30 MB)
-- Active development and good documentation
+```
+┌────────┐     ┌─────────┐     ┌──────────┐     ┌──────────────┐
+│ Browser│────>│ Traefik │────>│ Authelia │     │Signal K:3000 │
+└────────┘     └─────────┘     └──────────┘     │  (host net)  │
+     │              │               │           └──────────────┘
+     │  1. GET signalk.boat.local   │                │
+     │─────────────>│               │                │
+     │              │ 2. ForwardAuth│                │
+     │              │──────────────>│                │
+     │              │  3. 200 (valid session)        │
+     │              │<──────────────│                │
+     │              │ 4. Route to host.docker.internal:3000
+     │              │───────────────────────────────>│
+     │              │               │   5. Response  │
+     │              │<───────────────────────────────│
+     │  6. Response │               │                │
+     │<─────────────│               │                │
+```
 
-### Identity Provider: Authelia 4.38
+## OIDC Client Management
 
-**Rationale**: Authelia is chosen over alternatives (Keycloak, Authentik) because:
-- Extremely low memory footprint (~30-50 MB)
-- File-based user storage (no database required)
-- Both OIDC and ForwardAuth in one component
-- Simple YAML configuration
+### Configuration Structure
 
-### mDNS: Dedicated halos-mdns-publisher image
+Authelia uses multi-file configuration. OIDC clients are managed via a `.d` directory pattern:
 
-**Rationale**: A dedicated container image built from Alpine because:
-- Fast startup (no runtime package installation)
-- Reproducible builds with fixed dependencies
-- Smallest possible footprint
-- Avahi tools pre-installed
-- Simple enough that shell scripting is appropriate
-- Image hosted on ghcr.io/hatlabs for easy distribution
+```
+/etc/halos/oidc-clients.d/           # App packages drop snippets here
+├── homarr.yml                       # Installed by homarr-container
+└── another-app.yml                  # Installed by another-app-container
+
+/var/lib/container-apps/authelia-container/data/
+├── configuration.yml                # Base config
+├── oidc-clients.yml                 # Merged from .d directory (generated)
+├── users_database.yml               # User credentials
+├── oidc_private_key.pem             # JWT signing key
+└── db.sqlite3                       # Session storage
+```
+
+### Client Registration Process
+
+**App installation** (simple):
+1. Package installs YAML snippet to `/etc/halos/oidc-clients.d/{app_id}.yml`
+2. Package triggers Authelia restart (via systemd dependency or postinst)
+
+**Authelia prestart** (handles merging):
+1. Reads all files from `/etc/halos/oidc-clients.d/*.yml`
+2. Merges client definitions into single `oidc-clients.yml`
+3. Authelia container starts with merged config
+
+**Important**: Authelia only reads OIDC client snippets during its prestart phase. If an OIDC-enabled app is installed while Authelia is already running, the new client won't be registered until Authelia restarts. The systemd service dependency ensures correct ordering on system boot, but manual restart may be needed after installing new OIDC apps:
+
+```bash
+systemctl restart authelia-container
+```
+
+**App removal**:
+1. Package's `postrm` removes `/etc/halos/oidc-clients.d/{app_id}.yml`
+2. Authelia restart merges remaining clients
+
+**Note**: OIDC snippet cleanup requires custom `postrm` logic in each OIDC app package. This will be automated by container-packaging-tools in Phase 2 (Issue #151).
+
+### OIDC Client Snippet Format
+
+Each app installs a snippet like:
+
+```yaml
+# /etc/halos/oidc-clients.d/homarr.yml
+client_id: homarr
+client_name: Homarr Dashboard
+client_secret_file: /var/lib/container-apps/homarr-container/data/oidc-secret
+redirect_uris:
+  - 'http://${HALOS_DOMAIN}/api/auth/callback/oidc'
+scopes: [openid, profile, email, groups]
+consent_mode: implicit
+```
+
+The `client_secret_file` reference allows the prestart script to read and hash the secret during merge.
+
+**YAML Format Limitations**: The prestart script uses shell-based YAML parsing which has limitations:
+- Use simple YAML format only (no anchors, aliases, or complex types)
+- Values should not contain inline comments (`# after value`)
+- Multi-line quoted strings are not supported
+- Array items must be on separate lines with `- ` prefix
+- Scopes can use inline format: `[openid, profile, email]`
+
+### Merged oidc-clients.yml Format
+
+```yaml
+# Generated by Authelia prestart - do not edit
+identity_providers:
+  oidc:
+    clients:
+      - client_id: homarr
+        client_name: Homarr Dashboard
+        client_secret: '$pbkdf2-sha512$...'  # Hashed from file
+        redirect_uris:
+          - 'http://boat.local/api/auth/callback/oidc'
+        scopes: [openid, profile, email, groups]
+        consent_mode: implicit
+```
+
+## Per-App Middleware
+
+### Default ForwardAuth Middleware
+
+Defined in Traefik's dynamic configuration:
+
+```yaml
+# /var/lib/container-apps/traefik-container/assets/dynamic/authelia.yml
+http:
+  middlewares:
+    authelia:
+      forwardAuth:
+        address: "http://authelia:9091/api/authz/forward-auth"
+        trustForwardHeader: true
+        authResponseHeaders:
+          - Remote-User
+          - Remote-Groups
+          - Remote-Email
+          - Remote-Name
+```
+
+### Custom Per-App Middleware
+
+Apps requiring custom headers get their own middleware:
+
+```yaml
+# /var/lib/container-apps/traefik-container/assets/dynamic/grafana.yml
+http:
+  middlewares:
+    authelia-grafana:
+      forwardAuth:
+        address: "http://authelia:9091/api/authz/forward-auth"
+        trustForwardHeader: true
+        authResponseHeaders:
+          - X-Forwarded-User      # Mapped from Remote-User
+          - X-Forwarded-Groups    # Mapped from Remote-Groups
+
+      headers:
+        customRequestHeaders:
+          X-Forwarded-User: "{{ .RemoteUser }}"
+          X-Forwarded-Groups: "{{ .RemoteGroups }}"
+```
 
 ## File Structure
 
@@ -185,97 +375,161 @@ The mDNS publisher requires host network mode to access the Avahi daemon running
 halos-core-containers/
 ├── apps/
 │   ├── traefik/
-│   │   ├── docker-compose.yml      # Container definition
-│   │   ├── metadata.yaml           # Package metadata
-│   │   ├── config.yml              # User-configurable options
+│   │   ├── docker-compose.yml
+│   │   ├── metadata.yaml
 │   │   └── assets/
-│   │       ├── traefik.yml         # Traefik static config
+│   │       ├── traefik.yml              # Static config
 │   │       └── dynamic/
-│   │           └── authelia.yml    # ForwardAuth middleware
+│   │           └── authelia.yml         # Default ForwardAuth middleware
 │   │
 │   ├── authelia/
-│   │   ├── docker-compose.yml      # Container definition
-│   │   ├── metadata.yaml           # Package metadata
-│   │   ├── config.yml              # User-configurable options
-│   │   ├── prestart.sh             # Secret generation script
+│   │   ├── docker-compose.yml
+│   │   ├── metadata.yaml
+│   │   ├── prestart.sh                  # Secret generation
 │   │   └── assets/
 │   │       └── configuration.yml.template
 │   │
 │   ├── mdns-publisher/
-│   │   ├── docker-compose.yml      # Container definition
-│   │   ├── metadata.yaml           # Package metadata
-│   │   ├── Dockerfile              # Image build definition
+│   │   ├── docker-compose.yml
+│   │   ├── metadata.yaml
 │   │   └── assets/
 │   │       └── publish-subdomains.sh
 │   │
-│   └── homarr/                     # Modified existing app
-│       ├── docker-compose.yml      # Updated for Traefik
-│       └── config.yml              # Added OIDC options
+│   └── homarr/
+│       ├── docker-compose.yml
+│       ├── metadata.yaml                # traefik.auth: oidc
+│       └── prestart.sh                  # OIDC env setup
 │
 └── docs/
     ├── SSO_SPEC.md
     └── SSO_ARCHITECTURE.md
 ```
 
+## Integration via metadata.yaml
+
+Applications declare their SSO integration in `metadata.yaml`:
+
+```yaml
+# Example: Forward Auth app with custom headers
+name: Grafana
+app_id: grafana
+# ...
+traefik:
+  subdomain: grafana
+  auth: forward_auth
+  forward_auth:
+    headers:
+      Remote-User: X-WEBAUTH-USER
+      Remote-Groups: X-WEBAUTH-GROUPS
+```
+
+```yaml
+# Example: OIDC app
+name: Homarr
+app_id: homarr
+# ...
+traefik:
+  subdomain: ""  # Empty = root domain ({hostname}.local)
+  auth: oidc
+  oidc:
+    client_name: Homarr Dashboard
+    scopes: [openid, profile, email, groups]
+    redirect_path: /api/auth/callback/oidc
+    consent_mode: implicit
+```
+
+```yaml
+# Example: No-auth app
+name: AvNav
+app_id: avnav
+# ...
+traefik:
+  subdomain: avnav
+  auth: none
+```
+
+```yaml
+# Example: Host networking app
+name: Signal K
+app_id: signalk-server
+# ...
+traefik:
+  subdomain: signalk
+  auth: forward_auth
+  host_port: 3000  # Traefik routes to host:3000
+```
+
 ## Security Considerations
 
 ### Session Security
 
-- Authelia session cookies are HTTP-only and secure (when HTTPS enabled)
-- Session secrets are auto-generated at first boot
+- Authelia session cookies are HTTP-only and Secure (when HTTPS)
+- Session secrets auto-generated at first boot
 - Sessions expire after configurable timeout
+- Single session across all applications (SSO)
 
 ### Credential Storage
 
 - Passwords stored as argon2id hashes (not reversible)
-- OIDC client secrets stored in configuration files
-- Private keys for OIDC JWT signing stored in data directory
+- OIDC client secrets stored hashed in configuration
+- Plaintext client secrets stored in app data directories (600 permissions)
+- OIDC private key stored in Authelia data directory (600 permissions)
 
 ### Network Security
 
 - All containers communicate over isolated Docker network
 - Only Traefik exposes ports to host network
 - mDNS publisher has host network access (required for Avahi)
+- Host networking apps expose their ports but can still use ForwardAuth
 
-### Limitations (MVP)
+### Limitations
 
-- No HTTPS (traffic is unencrypted on local network)
-- No rate limiting on login attempts
-- No account lockout after failed attempts
-
-## Integration Points
-
-### Container Labels
-
-Applications integrate with Traefik via Docker labels:
-
-| Label | Purpose |
-|-------|---------|
-| `traefik.enable=true` | Enable Traefik routing |
-| `traefik.http.routers.{name}.rule` | Host matching rule |
-| `traefik.http.services.{name}.loadbalancer.server.port` | Backend port |
-| `halos.subdomain` | mDNS subdomain to advertise |
-
-### Environment Variables
-
-Applications integrate with Authelia via environment variables for OIDC configuration. The specific variables depend on the application.
-
-### Credential Sync
-
-The homarr-container-adapter syncs credentials from:
-- Source: `/etc/halos-homarr-branding/branding.toml` (credentials section)
-- Target: Authelia's `users_database.yml`
+- No rate limiting on login attempts (future enhancement)
+- No account lockout after failed attempts (future enhancement)
+- Certificate management not automated
 
 ## Deployment Dependencies
 
 ```
-traefik-container (standalone, creates network)
+traefik-container
        │
-       ├── mdns-publisher-container (depends on traefik)
+       ├── mdns-publisher-container
        │
-       ├── authelia-container (depends on traefik)
+       ├── authelia-container
        │
-       └── homarr-container (depends on traefik, recommends authelia)
+       └── application containers
+            ├── homarr-container (OIDC)
+            ├── grafana-container (ForwardAuth)
+            ├── influxdb-container (ForwardAuth)
+            └── signalk-container (ForwardAuth, host networking)
 ```
 
-The Debian package dependencies ensure correct installation order. Systemd service dependencies ensure correct startup order.
+Package dependencies ensure correct installation order. Systemd service dependencies ensure correct startup order.
+
+## Dynamic Registration
+
+### App Installation
+
+1. Debian package installed
+2. `postinst` creates directories, generates secrets if needed
+3. If OIDC app: snippet already installed to `/etc/halos/oidc-clients.d/`
+4. Systemd service enabled (depends on Authelia for OIDC apps)
+5. Authelia restarts, prestart merges OIDC clients
+6. App container starts with Traefik labels
+7. Traefik automatically picks up new route
+8. mDNS publisher advertises new subdomain
+
+### App Removal
+
+1. Systemd service stopped
+2. `postrm` removes OIDC snippet from `/etc/halos/oidc-clients.d/`
+3. Authelia restarts, prestart regenerates merged config
+4. Traefik automatically removes route
+5. mDNS publisher removes subdomain advertisement
+
+### Key Design Principle
+
+Package scripts stay simple:
+- **Install**: Drop files, create directories, generate secrets
+- **Remove**: Delete files
+- **No config parsing**: Authelia prestart handles all OIDC config merging

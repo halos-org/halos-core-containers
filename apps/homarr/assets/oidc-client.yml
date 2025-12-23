@@ -1,0 +1,11 @@
+# Homarr OIDC Client Snippet
+# This file is installed to /etc/halos/oidc-clients.d/homarr.yml by prestart.sh
+# Authelia's prestart script merges all snippets into oidc-clients.yml
+
+client_id: homarr
+client_name: Homarr Dashboard
+client_secret_file: /var/lib/container-apps/halos-homarr-container/data/oidc-secret
+redirect_uris:
+  - 'https://${HALOS_DOMAIN}/api/auth/callback/oidc'
+scopes: [openid, profile, email, groups]
+consent_mode: implicit
