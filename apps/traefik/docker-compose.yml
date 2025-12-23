@@ -14,6 +14,8 @@ services:
       - ${CONTAINER_DATA_ROOT}/acme.json:/acme.json
     networks:
       - proxy
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     logging:
       driver: journald
       options:
