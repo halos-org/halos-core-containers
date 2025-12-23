@@ -9,7 +9,8 @@ services:
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
       - ./traefik.yml:/etc/traefik/traefik.yml:ro
-      - ./dynamic:/etc/traefik/dynamic:ro
+      # Dynamic middleware directory - apps drop their files here
+      - /etc/halos/traefik-dynamic.d:/etc/traefik/dynamic:ro
       - ${CONTAINER_DATA_ROOT}/acme.json:/acme.json
     networks:
       - proxy
