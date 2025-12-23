@@ -1,5 +1,6 @@
 # Authelia Configuration for HaLOS
 # This template is processed by prestart.sh to inject generated secrets
+# OIDC clients are loaded separately from /config/oidc-clients.yml
 
 theme: auto
 
@@ -51,18 +52,3 @@ identity_providers:
     jwks:
       - key: |
           ${OIDC_PRIVATE_KEY}
-    clients:
-      - client_id: homarr
-        client_name: Homarr Dashboard
-        client_secret: '${HOMARR_CLIENT_SECRET_HASH}'
-        public: false
-        authorization_policy: one_factor
-        redirect_uris:
-          - 'https://${HALOS_DOMAIN}/api/auth/callback/oidc'
-        scopes:
-          - openid
-          - profile
-          - groups
-          - email
-        consent_mode: implicit
-        token_endpoint_auth_method: client_secret_basic

@@ -7,12 +7,19 @@ services:
       - ${CONTAINER_DATA_ROOT}/data:/config
     environment:
       - TZ=${TZ:-UTC}
+      # Load base configuration and OIDC clients (merged by Authelia)
+      - X_AUTHELIA_CONFIG=/config/configuration.yml,/config/oidc-clients.yml
     networks:
       - proxy
     labels:
       - traefik.enable=true
+      # HTTP router
       - traefik.http.routers.authelia.rule=Host(`auth.${HALOS_DOMAIN:-halos.local}`)
       - traefik.http.routers.authelia.entrypoints=web
+      # HTTPS router
+      - traefik.http.routers.authelia-secure.rule=Host(`auth.${HALOS_DOMAIN:-halos.local}`)
+      - traefik.http.routers.authelia-secure.entrypoints=websecure
+      - traefik.http.routers.authelia-secure.tls=true
       - traefik.http.services.authelia.loadbalancer.server.port=9091
       - halos.subdomain=auth
     logging:
