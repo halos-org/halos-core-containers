@@ -4,7 +4,7 @@ services:
     container_name: authelia
     restart: unless-stopped
     volumes:
-      - ${CONTAINER_DATA_ROOT}/data:/config
+      - ${CONTAINER_DATA_ROOT}:/config
     environment:
       - TZ=${TZ:-UTC}
       # Load base configuration and OIDC clients (merged by Authelia)

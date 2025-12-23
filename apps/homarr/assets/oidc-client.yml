@@ -4,7 +4,7 @@
 
 client_id: homarr
 client_name: Homarr Dashboard
-client_secret_file: /var/lib/container-apps/homarr-container/data/oidc-secret
+client_secret_file: /var/lib/container-apps/halos-homarr-container/data/oidc-secret
 redirect_uris:
   - 'https://${HALOS_DOMAIN}/api/auth/callback/oidc'
 scopes: [openid, profile, email, groups]
