@@ -75,6 +75,8 @@ Authelia provides both OIDC provider and Forward Auth functionality.
 - `oidc-clients.yml` - OIDC client definitions (regenerated when apps change)
 - `users_database.yml` - User credentials (argon2id hashes)
 
+**Note**: `configuration.yml` is regenerated from a template on every Authelia restart to handle hostname/domain changes. Manual edits to this file will be overwritten. For customization, modify the template in the package or use environment variable overrides where supported.
+
 **Data storage**:
 - Session data: SQLite database
 - OIDC keys: RSA private key for JWT signing
@@ -272,9 +274,17 @@ Authelia uses multi-file configuration. OIDC clients are managed via a `.d` dire
 2. Merges client definitions into single `oidc-clients.yml`
 3. Authelia container starts with merged config
 
+**Important**: Authelia only reads OIDC client snippets during its prestart phase. If an OIDC-enabled app is installed while Authelia is already running, the new client won't be registered until Authelia restarts. The systemd service dependency ensures correct ordering on system boot, but manual restart may be needed after installing new OIDC apps:
+
+```bash
+systemctl restart authelia-container
+```
+
 **App removal**:
-1. Package removes `/etc/halos/oidc-clients.d/{app_id}.yml`
+1. Package's `postrm` removes `/etc/halos/oidc-clients.d/{app_id}.yml`
 2. Authelia restart merges remaining clients
+
+**Note**: OIDC snippet cleanup requires custom `postrm` logic in each OIDC app package. This will be automated by container-packaging-tools in Phase 2 (Issue #151).
 
 ### OIDC Client Snippet Format
 
@@ -292,6 +302,13 @@ consent_mode: implicit
 ```
 
 The `client_secret_file` reference allows the prestart script to read and hash the secret during merge.
+
+**YAML Format Limitations**: The prestart script uses shell-based YAML parsing which has limitations:
+- Use simple YAML format only (no anchors, aliases, or complex types)
+- Values should not contain inline comments (`# after value`)
+- Multi-line quoted strings are not supported
+- Array items must be on separate lines with `- ` prefix
+- Scopes can use inline format: `[openid, profile, email]`
 
 ### Merged oidc-clients.yml Format
 

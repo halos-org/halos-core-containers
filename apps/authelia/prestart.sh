@@ -61,28 +61,37 @@ EOF
 
 # Hash a plaintext secret using pbkdf2-sha512 (Authelia-compatible)
 # Output format: $pbkdf2-sha512$310000$<base64_salt>$<base64_hash>
+# Returns non-zero on failure
 hash_client_secret() {
     local plaintext="$1"
 
     # Use Python for reliable PBKDF2-SHA512 hashing
-    python3 << EOF
+    # Pass secret via stdin to avoid shell injection issues
+    echo -n "$plaintext" | python3 -c '
+import sys
 import hashlib
 import base64
 import os
 
-password = """${plaintext}"""
+password = sys.stdin.read()
 iterations = 310000
 salt = os.urandom(16)
-dk = hashlib.pbkdf2_hmac('sha512', password.encode(), salt, iterations, dklen=32)
+dk = hashlib.pbkdf2_hmac("sha512", password.encode(), salt, iterations, dklen=32)
 
-salt_b64 = base64.b64encode(salt).decode().rstrip('=')
-hash_b64 = base64.b64encode(dk).decode().rstrip('=')
+salt_b64 = base64.b64encode(salt).decode().rstrip("=")
+hash_b64 = base64.b64encode(dk).decode().rstrip("=")
 
-print(f'\$pbkdf2-sha512\${iterations}\${salt_b64}\${hash_b64}')
-EOF
+print(f"$pbkdf2-sha512${iterations}${salt_b64}${hash_b64}")
+'
 }
 
 # Merge OIDC client snippets from .d directory
+# YAML Parsing Limitations:
+#   - Snippets must use simple YAML format (no anchors, aliases, or complex types)
+#   - Values should not contain inline comments (# after value)
+#   - Multi-line quoted strings are not supported
+#   - Array items must be on separate lines with "- " prefix
+#   - Scopes can use inline format: [openid, profile, email]
 merge_oidc_clients() {
     echo "Merging OIDC client snippets..."
 
@@ -123,7 +132,15 @@ EOF
         local client_secret_hash=""
         if [ -n "$client_secret_file" ] && [ -f "$client_secret_file" ]; then
             local plaintext_secret=$(cat "$client_secret_file")
-            client_secret_hash=$(hash_client_secret "$plaintext_secret")
+            if ! client_secret_hash=$(hash_client_secret "$plaintext_secret"); then
+                echo "  ERROR: Failed to hash client secret for ${snippet_name}"
+                continue
+            fi
+            # Validate hash output format
+            if [[ ! "$client_secret_hash" =~ ^\$pbkdf2-sha512\$ ]]; then
+                echo "  ERROR: Invalid hash format for ${snippet_name}"
+                continue
+            fi
         else
             echo "  WARNING: Skipping ${snippet_name} - client_secret_file not found: ${client_secret_file}"
             continue

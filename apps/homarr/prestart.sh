@@ -82,18 +82,15 @@ fi
 OIDC_CLIENT_SECRET=$(cat "${OIDC_SECRET_FILE}")
 
 # Install OIDC client snippet to the .d directory
-# The OIDC clients directory is created by authelia-container
-if [ -d "${OIDC_CLIENTS_DIR}" ]; then
-    if [ -f "${OIDC_SNIPPET_SRC}" ]; then
-        echo "Installing OIDC client snippet to ${OIDC_SNIPPET_DST}"
-        cp "${OIDC_SNIPPET_SRC}" "${OIDC_SNIPPET_DST}"
-        chmod 644 "${OIDC_SNIPPET_DST}"
-    else
-        echo "WARNING: OIDC snippet source not found at ${OIDC_SNIPPET_SRC}"
-    fi
+# Create directory if it doesn't exist (idempotent, avoids race condition with Authelia)
+mkdir -p "${OIDC_CLIENTS_DIR}"
+
+if [ -f "${OIDC_SNIPPET_SRC}" ]; then
+    echo "Installing OIDC client snippet to ${OIDC_SNIPPET_DST}"
+    cp "${OIDC_SNIPPET_SRC}" "${OIDC_SNIPPET_DST}"
+    chmod 644 "${OIDC_SNIPPET_DST}"
 else
-    echo "WARNING: OIDC clients directory not found at ${OIDC_CLIENTS_DIR}"
-    echo "Authelia may not be installed. SSO will not work."
+    echo "WARNING: OIDC snippet source not found at ${OIDC_SNIPPET_SRC}"
 fi
 
 # ============================================
