@@ -397,7 +397,7 @@ halos-core-containers/
 │   │
 │   └── homarr/
 │       ├── docker-compose.yml
-│       ├── metadata.yaml                # traefik.auth: oidc
+│       ├── metadata.yaml                # routing.auth.mode: oidc
 │       └── prestart.sh                  # OIDC env setup
 │
 └── docs/
@@ -407,20 +407,21 @@ halos-core-containers/
 
 ## Integration via metadata.yaml
 
-Applications declare their SSO integration in `metadata.yaml`:
+Applications declare their SSO integration in `metadata.yaml` using the `routing` key:
 
 ```yaml
 # Example: Forward Auth app with custom headers
 name: Grafana
 app_id: grafana
 # ...
-traefik:
+routing:
   subdomain: grafana
-  auth: forward_auth
-  forward_auth:
-    headers:
-      Remote-User: X-WEBAUTH-USER
-      Remote-Groups: X-WEBAUTH-GROUPS
+  auth:
+    mode: forward_auth
+    forward_auth:
+      headers:
+        Remote-User: X-WEBAUTH-USER
+        Remote-Groups: X-WEBAUTH-GROUPS
 ```
 
 ```yaml
@@ -428,14 +429,10 @@ traefik:
 name: Homarr
 app_id: homarr
 # ...
-traefik:
+routing:
   subdomain: ""  # Empty = root domain ({hostname}.local)
-  auth: oidc
-  oidc:
-    client_name: Homarr Dashboard
-    scopes: [openid, profile, email, groups]
-    redirect_path: /api/auth/callback/oidc
-    consent_mode: implicit
+  auth:
+    mode: oidc
 ```
 
 ```yaml
@@ -443,9 +440,10 @@ traefik:
 name: AvNav
 app_id: avnav
 # ...
-traefik:
+routing:
   subdomain: avnav
-  auth: none
+  auth:
+    mode: none
 ```
 
 ```yaml
@@ -453,11 +451,14 @@ traefik:
 name: Signal K
 app_id: signalk-server
 # ...
-traefik:
+routing:
   subdomain: signalk
-  auth: forward_auth
+  auth:
+    mode: forward_auth
   host_port: 3000  # Traefik routes to host:3000
 ```
+
+**Note**: The deprecated `traefik:` key is no longer supported. Use `routing:` instead.
 
 ## Security Considerations
 

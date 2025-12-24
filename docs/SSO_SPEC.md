@@ -168,36 +168,29 @@ Authelia requires passwords in argon2id format. The credential sync process must
 
 ## App Metadata Configuration
 
-Applications declare SSO configuration in their `metadata.yaml`:
+Applications declare SSO configuration in their `metadata.yaml` using the `routing` key:
 
 ```yaml
-traefik:
+routing:
   subdomain: myapp          # Optional, defaults to app_id
-  auth: forward_auth        # forward_auth (default) | oidc | none
+  auth:
+    mode: forward_auth      # forward_auth (default) | oidc | none
 
-  # Optional: customize auth headers for forward_auth
-  # Maps Authelia header names to what the app expects
-  # Default: Remote-User, Remote-Groups, Remote-Email, Remote-Name (passed as-is)
-  forward_auth:
-    headers:
-      Remote-User: X-Forwarded-User      # Authelia sends Remote-User, app receives X-Forwarded-User
-      Remote-Groups: X-Forwarded-Groups
-      Remote-Email: X-Forwarded-Email
-
-  # Only required if auth: oidc
-  oidc:
-    client_name: "My Application"
-    scopes:
-      - openid
-      - profile
-      - email
-    redirect_path: /callback
-    consent_mode: implicit
+    # Optional: customize auth headers for forward_auth
+    # Maps Authelia header names to what the app expects
+    # Default: Remote-User, Remote-Groups, Remote-Email, Remote-Name (passed as-is)
+    forward_auth:
+      headers:
+        Remote-User: X-Forwarded-User      # Authelia sends Remote-User, app receives X-Forwarded-User
+        Remote-Groups: X-Forwarded-Groups
+        Remote-Email: X-Forwarded-Email
 ```
 
-If the `traefik` section is omitted:
+If the `routing` section is omitted:
 - Apps with `web_ui.enabled: true` default to Forward Auth
 - Subdomain defaults to `app_id`
+
+**Note**: The deprecated `traefik:` key is no longer supported. Use `routing:` instead.
 
 ## Constraints
 
