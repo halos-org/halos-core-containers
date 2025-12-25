@@ -43,15 +43,21 @@ set -a
 [ -f "${ENV_FILE}" ] && . "${ENV_FILE}"
 set +a
 
+# Helper: check if env var exists with non-empty value in env file
+# Usage: has_nonempty_env_var "VAR_NAME"
+has_nonempty_env_var() {
+    grep -qE "^$1=\"[^\"]+\"" "${ENV_FILE}" 2>/dev/null
+}
+
 # Generate SECRET_ENCRYPTION_KEY if not set or empty
-if [ -z "$SECRET_ENCRYPTION_KEY" ]; then
+if ! has_nonempty_env_var "SECRET_ENCRYPTION_KEY"; then
     echo "Generating SECRET_ENCRYPTION_KEY..."
     SECRET_ENCRYPTION_KEY=$(openssl rand -hex 32)
     echo "SECRET_ENCRYPTION_KEY=\"${SECRET_ENCRYPTION_KEY}\"" >> "${ENV_FILE}"
 fi
 
 # Generate AUTH_SECRET for NextAuth.js (required for OIDC state encryption)
-if ! grep -q "^AUTH_SECRET=" "${ENV_FILE}" 2>/dev/null; then
+if ! has_nonempty_env_var "AUTH_SECRET"; then
     echo "Generating AUTH_SECRET..."
     AUTH_SECRET=$(openssl rand -hex 32)
     echo "AUTH_SECRET=\"${AUTH_SECRET}\"" >> "${ENV_FILE}"
@@ -148,7 +154,9 @@ if ! grep -q "^AUTH_OIDC_FORCE_USERINFO=" "${ENV_FILE}" 2>/dev/null; then
     echo "AUTH_OIDC_FORCE_USERINFO=\"true\"" >> "${ENV_FILE}"
 fi
 
-# Enable account linking to allow OIDC users to link to existing accounts
+# Enable account linking to allow OIDC users to link to existing accounts.
+# The name sounds scary, but in HaLOS's single-user device context (where the
+# same person owns both local and OIDC accounts), this is the expected behavior.
 if ! grep -q "^AUTH_OIDC_ENABLE_DANGEROUS_ACCOUNT_LINKING=" "${ENV_FILE}" 2>/dev/null; then
     echo "AUTH_OIDC_ENABLE_DANGEROUS_ACCOUNT_LINKING=\"true\"" >> "${ENV_FILE}"
 fi
