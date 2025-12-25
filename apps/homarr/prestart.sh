@@ -43,21 +43,19 @@ set -a
 [ -f "${ENV_FILE}" ] && . "${ENV_FILE}"
 set +a
 
-# Helper: check if env var exists with non-empty value in env file
-# Usage: has_nonempty_env_var "VAR_NAME"
-has_nonempty_env_var() {
-    grep -qE "^$1=\"[^\"]+\"" "${ENV_FILE}" 2>/dev/null
-}
-
-# Generate SECRET_ENCRYPTION_KEY if not set or empty
-if ! has_nonempty_env_var "SECRET_ENCRYPTION_KEY"; then
+# Generate SECRET_ENCRYPTION_KEY if not set or empty.
+# IMPORTANT: Use [ -z ] check (not grep) because regenerating this key causes
+# data loss - Homarr uses it to encrypt secrets in the database.
+if [ -z "$SECRET_ENCRYPTION_KEY" ]; then
     echo "Generating SECRET_ENCRYPTION_KEY..."
     SECRET_ENCRYPTION_KEY=$(openssl rand -hex 32)
     echo "SECRET_ENCRYPTION_KEY=\"${SECRET_ENCRYPTION_KEY}\"" >> "${ENV_FILE}"
 fi
 
-# Generate AUTH_SECRET for NextAuth.js (required for OIDC state encryption)
-if ! has_nonempty_env_var "AUTH_SECRET"; then
+# Generate AUTH_SECRET for NextAuth.js (required for OIDC state encryption).
+# Use stricter check requiring non-empty quoted value - regeneration only
+# requires re-login, not data loss.
+if ! grep -qE "^AUTH_SECRET=\"[^\"]+\"" "${ENV_FILE}" 2>/dev/null; then
     echo "Generating AUTH_SECRET..."
     AUTH_SECRET=$(openssl rand -hex 32)
     echo "AUTH_SECRET=\"${AUTH_SECRET}\"" >> "${ENV_FILE}"
