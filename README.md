@@ -1,20 +1,36 @@
 # HaLOS Core Containers
 
-Core container application definitions for HaLOS. These apps are pre-installed in HaLOS images, providing essential system functionality.
+Core container application definitions for HaLOS. These apps are pre-installed in HaLOS images, providing essential system functionality including Single Sign-On (SSO).
 
 ## What's in This Repository
 
 This repository contains core HaLOS container applications:
 
-- **Homarr Dashboard** - The main landing page at `http://halos.local/`
-- Future: Traefik reverse proxy
+- **Traefik** - Reverse proxy and load balancer, routes all web traffic via subdomains
+- **Authelia** - Identity provider for SSO (OIDC + ForwardAuth)
+- **Homarr** - Dashboard landing page at `https://{hostname}.local/`
+- **mDNS Publisher** - Advertises app subdomains via Avahi/mDNS
 
 **Key difference from halos-marine-containers:** No store package - core apps are pre-installed in HaLOS images, not discovered via store UI.
+
+## Single Sign-On (SSO)
+
+HaLOS provides unified authentication across all web applications:
+
+- All apps accessible via subdomains: `{app}.{hostname}.local`
+- Single login for all applications
+- HTTP automatically redirects to HTTPS
+- Three auth modes: ForwardAuth (default), OIDC, or none
+
+See [docs/SSO_SPEC.md](docs/SSO_SPEC.md) and [docs/SSO_ARCHITECTURE.md](docs/SSO_ARCHITECTURE.md) for details.
 
 ## Build Output
 
 CI/CD builds Debian packages from this repository:
-- `homarr-container` - Dashboard landing page
+- `halos-traefik-container` - Reverse proxy
+- `halos-authelia-container` - SSO identity provider
+- `halos-homarr-container` - Dashboard landing page
+- `halos-mdns-publisher-container` - mDNS subdomain advertising
 
 All packages are published to apt.hatlabs.fi.
 
@@ -44,11 +60,13 @@ See `halos-distro/docs/` for development workflows:
 ```
 halos-core-containers/
 ├── apps/
-│   └── homarr/             # Dashboard application
-│       ├── docker-compose.yml
-│       ├── config.yml
-│       ├── metadata.yaml
-│       └── icon.png
+│   ├── traefik/            # Reverse proxy
+│   ├── authelia/           # SSO identity provider
+│   ├── homarr/             # Dashboard landing page
+│   └── mdns-publisher/     # mDNS subdomain advertising
+├── docs/
+│   ├── SSO_SPEC.md         # SSO technical specification
+│   └── SSO_ARCHITECTURE.md # SSO system architecture
 ├── tools/                   # Build scripts
 ├── .github/workflows/       # CI/CD
 └── README.md
