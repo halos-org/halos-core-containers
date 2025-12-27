@@ -27,4 +27,8 @@ runs:
 
     - name: Build packages
       shell: bash
+      env:
+        # Placeholder hostname for registry URL generation during build.
+        # The actual URL is determined at runtime by homarr-container-adapter.
+        HALOS_HOSTNAME: halos.local
       run: ./tools/build-all.sh
