@@ -16,8 +16,6 @@ if [[ $0 != $PROJECT_ROOT && $PROJECT_ROOT != "" ]]; then
 fi
 readonly PROJECT_ROOT=$(pwd)
 
-# Default deploy target
-readonly DEFAULT_DEPLOY_TARGET="halos.local"
 
 # Docker image name for building
 readonly DOCKER_IMAGE="halos-core-containers-builder"
@@ -52,10 +50,23 @@ function build {
 # Deploy Commands
 
 function deploy {
-  #@ Deploy packages to test server (default: all packages to halos.local)
+  #@ Deploy packages to test server (usage: ./run deploy <target> [packages])
   #@ Category: Deploy
-  local target="${1:-$DEFAULT_DEPLOY_TARGET}"
+  local target="${1:-}"
   local packages="${2:-all}"
+
+  if [[ -z "$target" ]]; then
+    echo "Usage: ./run deploy <target> [packages]"
+    echo ""
+    echo "Arguments:"
+    echo "  target     Target host (e.g., pi@myhost.local)"
+    echo "  packages   Package names or 'all' (default: all)"
+    echo ""
+    echo "Examples:"
+    echo "  ./run deploy pi@myhost.local"
+    echo "  ./run deploy pi@myhost.local homarr"
+    return 1
+  fi
   local deb_files=()
 
   if [ "$packages" = "all" ]; then
@@ -151,9 +162,9 @@ function help {
   echo "Usage: ./run <command> [target_host]"
   echo ""
   echo "Quick start:"
-  echo "  1. ./run build-debtools  # Build packaging container (first time)"
-  echo "  2. ./run build           # Build all container packages"
-  echo "  3. ./run deploy          # Deploy homarr-container to halos.local"
+  echo "  1. ./run build-debtools             # Build packaging container (first time)"
+  echo "  2. ./run build                      # Build all container packages"
+  echo "  3. ./run deploy pi@myhost.local     # Deploy container packages to test server"
 }
 
 ################################################################################

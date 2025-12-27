@@ -6,7 +6,7 @@ description: Advertises HaLOS subdomains via mDNS/Avahi
 long_description: |
   The mDNS Publisher automatically advertises HaLOS application subdomains
   on the local network via Avahi/mDNS. This enables browsers to resolve
-  addresses like auth.halos.local without requiring DNS infrastructure.
+  addresses like auth.<hostname>.local without requiring DNS infrastructure.
 
   The publisher monitors Docker containers for the `halos.subdomain` label
   and dynamically registers/unregisters mDNS records as containers start

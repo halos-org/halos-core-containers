@@ -10,7 +10,7 @@ long_description: |
 
   Features:
   - Automatic service discovery from Docker containers
-  - Host-based routing (halos.local, auth.halos.local, etc.)
+  - Host-based routing (subdomains like auth.<hostname>.local)
   - ForwardAuth integration for SSO with Authelia
   - Dynamic configuration updates without restart
   - Built-in dashboard for monitoring (internal only)

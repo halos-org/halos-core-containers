@@ -14,11 +14,12 @@ services:
     labels:
       - traefik.enable=true
       # HTTP router (redirects to HTTPS)
-      - traefik.http.routers.authelia.rule=Host(`auth.${HALOS_DOMAIN:-halos.local}`)
+      # Note: HALOS_DOMAIN must be set by the system environment
+      - traefik.http.routers.authelia.rule=Host(`auth.${HALOS_DOMAIN}`)
       - traefik.http.routers.authelia.entrypoints=web
       - traefik.http.routers.authelia.middlewares=redirect-to-https@file
       # HTTPS router
-      - traefik.http.routers.authelia-secure.rule=Host(`auth.${HALOS_DOMAIN:-halos.local}`)
+      - traefik.http.routers.authelia-secure.rule=Host(`auth.${HALOS_DOMAIN}`)
       - traefik.http.routers.authelia-secure.entrypoints=websecure
       - traefik.http.routers.authelia-secure.tls=true
       - traefik.http.services.authelia.loadbalancer.server.port=9091
