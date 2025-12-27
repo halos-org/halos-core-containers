@@ -1,0 +1,27 @@
+FROM debian:trixie
+
+# Install Debian packaging tools and build dependencies
+RUN apt-get update && apt-get install -y \
+    debhelper \
+    dh-python \
+    build-essential \
+    fakeroot \
+    devscripts \
+    dpkg-dev \
+    python3-all \
+    python3-pip \
+    python3-venv \
+    pipx \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install uv for running container-packaging-tools
+RUN pipx install uv && pipx ensurepath
+
+# Set up PATH for pipx-installed binaries
+ENV PATH="/root/.local/bin:$PATH"
+
+# Set working directory
+WORKDIR /workspace
+
+# Default command
+CMD ["/bin/bash"]

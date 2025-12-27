@@ -299,9 +299,17 @@ redirect_uris:
   - 'http://${HALOS_DOMAIN}/api/auth/callback/oidc'
 scopes: [openid, profile, email, groups]
 consent_mode: implicit
+token_endpoint_auth_method: client_secret_basic  # or client_secret_post
 ```
 
 The `client_secret_file` reference allows the prestart script to read and hash the secret during merge.
+
+**Supported optional fields:**
+- `token_endpoint_auth_method`: How the client authenticates to the token endpoint. Defaults to `client_secret_post` if not specified. Common values:
+  - `client_secret_basic` - Credentials in Authorization header (used by NextAuth.js/Homarr)
+  - `client_secret_post` - Credentials in request body (used by Signal K)
+- `userinfo_signed_response_alg`: Algorithm for signed userinfo responses (e.g., `none`, `RS256`)
+- `id_token_signed_response_alg`: Algorithm for signed ID tokens (e.g., `RS256`)
 
 **YAML Format Limitations**: The prestart script uses shell-based YAML parsing which has limitations:
 - Use simple YAML format only (no anchors, aliases, or complex types)

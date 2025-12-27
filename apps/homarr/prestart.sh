@@ -43,11 +43,22 @@ set -a
 [ -f "${ENV_FILE}" ] && . "${ENV_FILE}"
 set +a
 
-# Generate SECRET_ENCRYPTION_KEY if not set or empty
+# Generate SECRET_ENCRYPTION_KEY if not set or empty.
+# IMPORTANT: Use [ -z ] check (not grep) because regenerating this key causes
+# data loss - Homarr uses it to encrypt secrets in the database.
 if [ -z "$SECRET_ENCRYPTION_KEY" ]; then
     echo "Generating SECRET_ENCRYPTION_KEY..."
     SECRET_ENCRYPTION_KEY=$(openssl rand -hex 32)
     echo "SECRET_ENCRYPTION_KEY=\"${SECRET_ENCRYPTION_KEY}\"" >> "${ENV_FILE}"
+fi
+
+# Generate AUTH_SECRET for NextAuth.js (required for OIDC state encryption).
+# Use stricter check requiring non-empty quoted value - regeneration only
+# requires re-login, not data loss.
+if ! grep -qE "^AUTH_SECRET=\"[^\"]+\"" "${ENV_FILE}" 2>/dev/null; then
+    echo "Generating AUTH_SECRET..."
+    AUTH_SECRET=$(openssl rand -hex 32)
+    echo "AUTH_SECRET=\"${AUTH_SECRET}\"" >> "${ENV_FILE}"
 fi
 
 # Set hostname and domain (matches mDNS publisher)
@@ -133,6 +144,19 @@ fi
 # Set logout redirect URL
 if ! grep -q "^AUTH_LOGOUT_REDIRECT_URL=" "${ENV_FILE}" 2>/dev/null; then
     echo "AUTH_LOGOUT_REDIRECT_URL=\"https://auth.${HALOS_DOMAIN}/logout\"" >> "${ENV_FILE}"
+fi
+
+# Force userinfo endpoint usage (required for Authelia v4.39+)
+# See https://github.com/homarr-labs/homarr/issues/2635
+if ! grep -q "^AUTH_OIDC_FORCE_USERINFO=" "${ENV_FILE}" 2>/dev/null; then
+    echo "AUTH_OIDC_FORCE_USERINFO=\"true\"" >> "${ENV_FILE}"
+fi
+
+# Enable account linking to allow OIDC users to link to existing accounts.
+# The name sounds scary, but in HaLOS's single-user device context (where the
+# same person owns both local and OIDC accounts), this is the expected behavior.
+if ! grep -q "^AUTH_OIDC_ENABLE_DANGEROUS_ACCOUNT_LINKING=" "${ENV_FILE}" 2>/dev/null; then
+    echo "AUTH_OIDC_ENABLE_DANGEROUS_ACCOUNT_LINKING=\"true\"" >> "${ENV_FILE}"
 fi
 
 echo "Homarr prestart complete"

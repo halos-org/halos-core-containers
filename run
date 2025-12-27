@@ -1,0 +1,163 @@
+#!/usr/bin/env bash
+#
+# usage: ./run command [argument ...]
+#
+# Commands for halos-core-containers development.
+#
+
+set -o nounset
+set -o pipefail
+set -o errexit
+
+# Change the current directory to the project root.
+PROJECT_ROOT=${0%/*}
+if [[ $0 != $PROJECT_ROOT && $PROJECT_ROOT != "" ]]; then
+  cd "$PROJECT_ROOT"
+fi
+readonly PROJECT_ROOT=$(pwd)
+
+# Default deploy target
+readonly DEFAULT_DEPLOY_TARGET="halos.local"
+
+# Docker image name for building
+readonly DOCKER_IMAGE="halos-core-containers-builder"
+
+################################################################################
+# Build Commands
+
+function build-debtools {
+  #@ Build Docker image for package building
+  #@ Category: Build
+  echo "Building Docker image for package building..."
+  docker build -t "$DOCKER_IMAGE" -f docker/Dockerfile.debtools docker/
+}
+
+function build {
+  #@ Build all container packages (in Docker)
+  #@ Category: Build
+  echo "Building all container packages..."
+
+  # Ensure Docker image exists
+  if ! docker image inspect "$DOCKER_IMAGE" &>/dev/null; then
+    echo "Docker image not found. Building..."
+    build-debtools
+  fi
+
+  # Run build in Docker container
+  docker run --rm -v "$(pwd):/workspace" "$DOCKER_IMAGE" \
+    bash -c "cd /workspace && ./tools/build-all.sh"
+}
+
+################################################################################
+# Deploy Commands
+
+function deploy {
+  #@ Deploy packages to test server (default: all packages to halos.local)
+  #@ Category: Deploy
+  local target="${1:-$DEFAULT_DEPLOY_TARGET}"
+  local packages="${2:-all}"
+  local deb_files=()
+
+  if [ "$packages" = "all" ]; then
+    # Deploy all built packages
+    for deb in build/*.deb; do
+      [ -f "$deb" ] && deb_files+=("$deb")
+    done
+  else
+    # Deploy specific package(s)
+    for pkg in $packages; do
+      local deb_file
+      deb_file=$(ls -t build/halos-${pkg}-container*.deb 2>/dev/null | head -1)
+      [ -n "$deb_file" ] && deb_files+=("$deb_file")
+    done
+  fi
+
+  if [ ${#deb_files[@]} -eq 0 ]; then
+    echo "No .deb files found. Run ./run build first."
+    exit 1
+  fi
+
+  echo "Deploying ${#deb_files[@]} package(s) to $target..."
+  for deb in "${deb_files[@]}"; do
+    echo "  - $(basename "$deb")"
+  done
+
+  scp "${deb_files[@]}" "$target:/tmp/"
+
+  local remote_debs=""
+  for deb in "${deb_files[@]}"; do
+    remote_debs="$remote_debs /tmp/$(basename "$deb")"
+  done
+
+  ssh "$target" "sudo apt install -y --allow-downgrades $remote_debs"
+  echo "Deployment complete."
+}
+
+function deploy-build {
+  #@ Build and deploy homarr-container to test server
+  #@ Category: Deploy
+  build
+  deploy "$@"
+}
+
+function status {
+  #@ Show installed package version on test server
+  #@ Category: Deploy
+  local target="${1:-$DEFAULT_DEPLOY_TARGET}"
+  ssh "$target" "dpkg -l | grep halos-homarr-container || echo 'Not installed'"
+}
+
+################################################################################
+# Help System
+
+function help {
+  #@ Show this help message
+  #@ Category: Core
+  echo "halos-core-containers development commands"
+  echo ""
+  echo "Available commands:"
+
+  # Extract function definitions and their help comments
+  awk '/^function / {
+    fname = $2
+    sub(/[({].*/, "", fname)
+    getline
+    if ($0 ~ /#@/) {
+      desc = $0
+      sub(/.*#@ /, "", desc)
+      sub(/ *$/, "", desc)
+      getline
+      if ($0 ~ /#@ Category:/) {
+        cat = $0
+        sub(/.*Category: /, "", cat)
+        sub(/ *$/, "", cat)
+        if (!seen[cat]++) categories[++cat_count] = cat
+        commands[cat, ++cmd_count[cat]] = fname
+        descriptions[cat, cmd_count[cat]] = desc
+      }
+    }
+  }
+  END {
+    for (i = 1; i <= cat_count; i++) {
+      cat = categories[i]
+      print "\n" cat ":"
+      for (j = 1; j <= cmd_count[cat]; j++) {
+        printf "  %-20s %s\n", commands[cat, j], descriptions[cat, j]
+      }
+    }
+  }' "$0"
+
+  echo ""
+  echo "Usage: ./run <command> [target_host]"
+  echo ""
+  echo "Quick start:"
+  echo "  1. ./run build-debtools  # Build packaging container (first time)"
+  echo "  2. ./run build           # Build all container packages"
+  echo "  3. ./run deploy          # Deploy homarr-container to halos.local"
+}
+
+################################################################################
+# Commands end.
+
+TIMEFORMAT=$'\nTask completed in %3lR'
+time "${@:-help}"
