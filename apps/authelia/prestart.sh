@@ -107,6 +107,9 @@ merge_oidc_clients() {
         local client_name=$(grep -E '^client_name:' "$snippet" | sed 's/client_name:[[:space:]]*//' | tr -d "'\"")
         local client_secret_file=$(grep -E '^client_secret_file:' "$snippet" | sed 's/client_secret_file:[[:space:]]*//' | tr -d "'\"")
         local consent_mode=$(grep -E '^consent_mode:' "$snippet" | sed 's/consent_mode:[[:space:]]*//' | tr -d "'\"")
+        local token_auth_method=$(grep -E '^token_endpoint_auth_method:' "$snippet" | sed 's/token_endpoint_auth_method:[[:space:]]*//' | tr -d "'\"")
+        local userinfo_signed=$(grep -E '^userinfo_signed_response_alg:' "$snippet" | sed 's/userinfo_signed_response_alg:[[:space:]]*//' | tr -d "'\"")
+        local id_token_signed=$(grep -E '^id_token_signed_response_alg:' "$snippet" | sed 's/id_token_signed_response_alg:[[:space:]]*//' | tr -d "'\"")
 
         # Validate required fields
         if [ -z "$client_id" ]; then
@@ -180,6 +183,13 @@ merge_oidc_clients() {
             scopes="[${scope_items%, }]"
         fi
 
+        # Build optional fields
+        local extra_fields=""
+        [ -n "$userinfo_signed" ] && extra_fields="${extra_fields}        userinfo_signed_response_alg: ${userinfo_signed}
+"
+        [ -n "$id_token_signed" ] && extra_fields="${extra_fields}        id_token_signed_response_alg: ${id_token_signed}
+"
+
         # Append client to clients_yaml
         clients_yaml="${clients_yaml}      - client_id: ${client_id}
         client_name: '${client_name:-${client_id}}'
@@ -190,8 +200,8 @@ merge_oidc_clients() {
 $(echo -e "${redirect_uris}" | sed '/^$/d')
         scopes: ${scopes:-[openid, profile, email]}
         consent_mode: ${consent_mode:-implicit}
-        token_endpoint_auth_method: client_secret_basic
-"
+        token_endpoint_auth_method: ${token_auth_method:-client_secret_post}
+${extra_fields}"
 
         client_count=$((client_count + 1))
     done

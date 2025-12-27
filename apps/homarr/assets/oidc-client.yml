@@ -9,3 +9,4 @@ redirect_uris:
   - 'https://${HALOS_DOMAIN}/api/auth/callback/oidc'
 scopes: [openid, profile, email, groups]
 consent_mode: implicit
+token_endpoint_auth_method: client_secret_basic
