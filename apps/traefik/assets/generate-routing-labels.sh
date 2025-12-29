@@ -245,6 +245,10 @@ http:
         - web
       middlewares:
         - localhost-to-mdns
+      # noop@internal is a valid but undocumented Traefik internal service.
+      # It's the standard pattern for routers where middleware handles the
+      # response (redirects never reach the backend). See:
+      # https://github.com/traefik/traefik/issues/7291
       service: noop@internal
       priority: 1000
 
