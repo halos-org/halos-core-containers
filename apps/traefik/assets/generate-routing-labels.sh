@@ -126,6 +126,7 @@ generate_override() {
     service_name=$(yaml_get_deep "routing" "backend" "service" < "$routing_file")
     port=$(yaml_get_deep "routing" "backend" "port" < "$routing_file")
     backend_type=$(yaml_get_deep "routing" "backend" "type" < "$routing_file")
+    backend_scheme=$(yaml_get_deep "routing" "backend" "scheme" < "$routing_file")
     auth_mode=$(yaml_get_nested "auth" "mode" < "$routing_file")
 
     # Handle subdomain specially: empty string ("") is valid (means root domain)
@@ -182,11 +183,18 @@ generate_override() {
     # For OIDC and none auth modes, no middleware label is added
 
     # Determine backend configuration
+    # Use scheme from routing.yml if specified, default to http
+    local scheme="${backend_scheme:-http}"
     local backend_label
+    local scheme_label=""
     if [ "${backend_type}" = "host" ]; then
-        backend_label="      traefik.http.services.${app_id}.loadbalancer.server.url: \"http://host.docker.internal:${port}\""
+        backend_label="      traefik.http.services.${app_id}.loadbalancer.server.url: \"${scheme}://host.docker.internal:${port}\""
     else
         backend_label="      traefik.http.services.${app_id}.loadbalancer.server.port: \"${port}\""
+        # Add scheme label for HTTPS backends (Traefik defaults to HTTP)
+        if [ "${scheme}" = "https" ]; then
+            scheme_label="      traefik.http.services.${app_id}.loadbalancer.server.scheme: \"https\""
+        fi
     fi
 
     # Build middleware label for HTTPS router (HTTP router only uses redirect-to-https)
@@ -218,6 +226,7 @@ services:
 ${https_middleware_label}
       # Backend service
 ${backend_label}
+${scheme_label}
       halos.subdomain: "${subdomain}"
 EOF
 
