@@ -27,5 +27,7 @@ debian_section: web
 architecture: all
 depends:
   - docker-ce (>= 20.10) | docker.io (>= 20.10)
+recommends:
+  - halos-cockpit-config
 web_ui:
   enabled: false
