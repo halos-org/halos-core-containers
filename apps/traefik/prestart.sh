@@ -136,8 +136,13 @@ http:
   services:
     cockpit:
       loadBalancer:
+        serversTransport: cockpit-transport
         servers:
-          - url: "http://host.docker.internal:9090"
+          - url: "https://host.docker.internal:9090"
+
+  serversTransports:
+    cockpit-transport:
+      insecureSkipVerify: true
 EOF
 
 chmod 644 "${COCKPIT_CONFIG_FILE}"
