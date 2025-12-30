@@ -1,6 +1,6 @@
 name: Authelia
 app_id: authelia
-version: 4.39.15-2
+version: 4.39.15-3
 upstream_version: 4.39.15
 description: Identity provider for HaLOS Single Sign-On
 long_description: |
@@ -36,3 +36,7 @@ web_ui:
   path: /
   protocol: http
   visible: false
+routing:
+  subdomain: auth  # Short subdomain for auth.halos.local
+  auth:
+    mode: none  # Authelia must not protect itself
