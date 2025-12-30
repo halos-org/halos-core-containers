@@ -27,9 +27,4 @@ runs:
 
     - name: Build packages
       shell: bash
-      env:
-        # Build-time placeholder for registry URL generation.
-        # Uses RFC 2606 reserved domain to clearly indicate this is not a real hostname.
-        # The actual URL is determined at runtime by homarr-container-adapter.
-        HALOS_HOSTNAME: build.example.local
       run: ./tools/build-all.sh
