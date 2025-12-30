@@ -154,23 +154,27 @@ echo "Cockpit routing configuration written to ${COCKPIT_CONFIG_FILE}"
 # This directory allows per-app middleware configurations
 # Apps can drop their own middleware files here
 DYNAMIC_DIR="/etc/halos/traefik-dynamic.d"
+DYNAMIC_SRC_DIR="${SCRIPT_DIR}/dynamic"
 mkdir -p "${DYNAMIC_DIR}"
 
-# Install default Authelia ForwardAuth middleware if not present
-# This is the standard middleware for apps using forward_auth
-AUTHELIA_MIDDLEWARE="${DYNAMIC_DIR}/authelia.yml"
-AUTHELIA_MIDDLEWARE_SRC="${SCRIPT_DIR}/dynamic/authelia.yml"
-
-if [ ! -f "${AUTHELIA_MIDDLEWARE}" ]; then
-    if [ -f "${AUTHELIA_MIDDLEWARE_SRC}" ]; then
-        echo "Installing default Authelia ForwardAuth middleware..."
-        cp "${AUTHELIA_MIDDLEWARE_SRC}" "${AUTHELIA_MIDDLEWARE}"
-        chmod 644 "${AUTHELIA_MIDDLEWARE}"
-    else
-        echo "WARNING: Default Authelia middleware not found at ${AUTHELIA_MIDDLEWARE_SRC}"
-    fi
+# Install all dynamic config files from package
+# These include: authelia.yml, redirects.yml, insecure-transport.yml
+if [ -d "${DYNAMIC_SRC_DIR}" ]; then
+    for src_file in "${DYNAMIC_SRC_DIR}"/*.yml; do
+        if [ -f "${src_file}" ]; then
+            filename=$(basename "${src_file}")
+            dest_file="${DYNAMIC_DIR}/${filename}"
+            if [ ! -f "${dest_file}" ]; then
+                echo "Installing dynamic config: ${filename}"
+                cp "${src_file}" "${dest_file}"
+                chmod 644 "${dest_file}"
+            else
+                echo "Dynamic config already exists: ${filename}"
+            fi
+        fi
+    done
 else
-    echo "Authelia middleware already exists at ${AUTHELIA_MIDDLEWARE}"
+    echo "WARNING: Dynamic config source directory not found at ${DYNAMIC_SRC_DIR}"
 fi
 
 # ============================================

@@ -187,13 +187,16 @@ generate_override() {
     local scheme="${backend_scheme:-http}"
     local backend_label
     local scheme_label=""
+    local transport_label=""
     if [ "${backend_type}" = "host" ]; then
         backend_label="      traefik.http.services.${app_id}.loadbalancer.server.url: \"${scheme}://host.docker.internal:${port}\""
     else
         backend_label="      traefik.http.services.${app_id}.loadbalancer.server.port: \"${port}\""
-        # Add scheme label for HTTPS backends (Traefik defaults to HTTP)
+        # Add scheme and transport labels for HTTPS backends
+        # Traefik defaults to HTTP, and HTTPS backends typically use self-signed certs
         if [ "${scheme}" = "https" ]; then
             scheme_label="      traefik.http.services.${app_id}.loadbalancer.server.scheme: \"https\""
+            transport_label="      traefik.http.services.${app_id}.loadbalancer.serversTransport: \"insecure@file\""
         fi
     fi
 
@@ -227,6 +230,7 @@ ${https_middleware_label}
       # Backend service
 ${backend_label}
 ${scheme_label}
+${transport_label}
       halos.subdomain: "${subdomain}"
 EOF
 

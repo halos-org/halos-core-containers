@@ -1,0 +1,11 @@
+# ServersTransport for backends with self-signed certificates
+# Used when routing.backend.scheme is "https"
+#
+# This transport skips TLS certificate verification, which is necessary
+# for backends that use self-signed certificates (e.g., OpenCPN with
+# selkies-gstreamer).
+
+http:
+  serversTransports:
+    insecure:
+      insecureSkipVerify: true
