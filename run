@@ -42,7 +42,17 @@ function build {
   fi
 
   # Run build in Docker container
-  docker run --rm -v "$(pwd):/workspace" "$DOCKER_IMAGE" \
+  # CONTAINER_TOOLS_REF can specify a git ref for container-packaging-tools
+  # CONTAINER_TOOLS_PATH can specify a local path to mount (for development)
+  local mount_opts="-v $(pwd):/workspace"
+  if [[ -n "${CONTAINER_TOOLS_PATH:-}" ]]; then
+    mount_opts="$mount_opts -v $CONTAINER_TOOLS_PATH:/container-tools"
+  fi
+
+  docker run --rm $mount_opts \
+    -e CONTAINER_TOOLS_REF="${CONTAINER_TOOLS_REF:-}" \
+    -e CONTAINER_TOOLS_PATH="${CONTAINER_TOOLS_PATH:+/container-tools}" \
+    "$DOCKER_IMAGE" \
     bash -c "cd /workspace && ./tools/build-all.sh"
 }
 
