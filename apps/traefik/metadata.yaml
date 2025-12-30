@@ -1,6 +1,6 @@
 name: Traefik
 app_id: traefik
-version: 3.6.5-1
+version: 3.6.5-2
 upstream_version: 3.6.5
 description: Reverse proxy and load balancer for HaLOS
 long_description: |
@@ -29,5 +29,13 @@ depends:
   - docker-ce (>= 20.10) | docker.io (>= 20.10)
 recommends:
   - halos-cockpit-config
+# Virtual package for reverse proxy - allows clean replacement with alternatives
+provides:
+  - halos-reverse-proxy
+conflicts:
+  - halos-reverse-proxy
 web_ui:
   enabled: false
+# System binaries provided by Traefik for other containers to use
+system_bin:
+  - configure-container-routing
