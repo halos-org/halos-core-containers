@@ -36,3 +36,10 @@ web_ui:
   path: /
   protocol: http
   visible: false
+# Authelia is the auth portal and must be accessible at auth.halos.local
+# (not authelia.halos.local). This matches the authelia_url in configuration.yml.
+# Auth mode is "none" because Authelia IS the auth provider - it can't protect itself!
+routing:
+  subdomain: "auth"
+  auth:
+    mode: "none"

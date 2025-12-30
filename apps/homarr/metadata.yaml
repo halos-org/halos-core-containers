@@ -37,5 +37,10 @@ web_ui:
   port: 7575
   protocol: http
   visible: false
+# Homarr is the main dashboard and must be accessible at the root domain
+# (e.g., https://halos.local), not a subdomain like homarr.halos.local.
+# Setting subdomain to empty string overrides the default (which uses app_id).
+routing:
+  subdomain: ""
 default_config:
   SECRET_ENCRYPTION_KEY: ""

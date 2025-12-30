@@ -255,6 +255,11 @@ OIDC_PRIVATE_KEY=$(cat "${DATA_DIR}/oidc_private_key.pem")
 HOSTNAME_SHORT=$(hostname -s 2>/dev/null || hostname | cut -d. -f1)
 HALOS_DOMAIN="${HOSTNAME_SHORT}.local"
 
+# Write HALOS_DOMAIN to runtime.env for docker-compose label substitution
+RUNTIME_ENV_DIR="/run/container-apps/${PACKAGE_NAME}"
+mkdir -p "${RUNTIME_ENV_DIR}"
+echo "HALOS_DOMAIN=${HALOS_DOMAIN}" >> "${RUNTIME_ENV_DIR}/runtime.env"
+
 # Process configuration template
 process_template() {
     echo "Processing Authelia configuration template..."

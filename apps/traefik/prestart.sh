@@ -37,6 +37,11 @@ if [ -z "${HALOS_DOMAIN}" ]; then
     HALOS_DOMAIN="${HOSTNAME}.local"
 fi
 
+# Write HALOS_DOMAIN to runtime.env for docker-compose label substitution
+RUNTIME_ENV_DIR="/run/container-apps/${PACKAGE_NAME}"
+mkdir -p "${RUNTIME_ENV_DIR}"
+echo "HALOS_DOMAIN=${HALOS_DOMAIN}" >> "${RUNTIME_ENV_DIR}/runtime.env"
+
 CERTS_DIR="${CONTAINER_DATA_ROOT}/certs"
 CERT_FILE="${CERTS_DIR}/halos.crt"
 KEY_FILE="${CERTS_DIR}/halos.key"
