@@ -159,7 +159,7 @@ echo "Cockpit routing configuration written to ${COCKPIT_CONFIG_FILE}"
 # This directory allows per-app middleware configurations
 # Apps can drop their own middleware files here
 DYNAMIC_DIR="/etc/halos/traefik-dynamic.d"
-DYNAMIC_SRC_DIR="${SCRIPT_DIR}/dynamic"
+DYNAMIC_SRC_DIR="${SCRIPT_DIR}/assets/dynamic"
 mkdir -p "${DYNAMIC_DIR}"
 
 # Install all dynamic config files from package

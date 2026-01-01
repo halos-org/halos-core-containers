@@ -15,7 +15,7 @@ DATA_DIR="/var/lib/container-apps/${PACKAGE_NAME}/data"
 # OIDC client configuration
 OIDC_CLIENTS_DIR="/etc/halos/oidc-clients.d"
 OIDC_SECRET_FILE="${DATA_DIR}/oidc-secret"
-OIDC_SNIPPET_SRC="${SCRIPT_DIR}/oidc-client.yml"
+OIDC_SNIPPET_SRC="${SCRIPT_DIR}/assets/oidc-client.yml"
 OIDC_SNIPPET_DST="${OIDC_CLIENTS_DIR}/homarr.yml"
 
 # Seed database from halos-homarr-branding
