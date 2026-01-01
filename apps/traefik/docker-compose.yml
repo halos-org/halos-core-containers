@@ -3,12 +3,16 @@ services:
     image: traefik:v3.6
     container_name: traefik
     restart: unless-stopped
+    # Wait for Authelia before starting Traefik to avoid HTTP 500 during boot
+    entrypoint: ["/wait-for-authelia.sh"]
+    command: ["traefik"]
     ports:
       - "80:80"
       - "443:443"
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
       - ./traefik.yml:/etc/traefik/traefik.yml:ro
+      - ./assets/wait-for-authelia.sh:/wait-for-authelia.sh:ro
       # Dynamic middleware directory - apps drop their files here
       - /etc/halos/traefik-dynamic.d:/etc/traefik/dynamic:ro
       # Generic routing declarations - read by prestart to generate labels

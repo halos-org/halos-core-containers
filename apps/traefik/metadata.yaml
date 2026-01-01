@@ -1,6 +1,6 @@
 name: Traefik
 app_id: traefik
-version: 3.6.5-3
+version: 3.6.5-4
 upstream_version: 3.6.5
 description: Reverse proxy and load balancer for HaLOS
 long_description: |
