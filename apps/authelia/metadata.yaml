@@ -1,6 +1,6 @@
 name: Authelia
 app_id: authelia
-version: 4.39.15-4
+version: 4.39.15-5
 upstream_version: 4.39.15
 description: Identity provider for HaLOS Single Sign-On
 long_description: |

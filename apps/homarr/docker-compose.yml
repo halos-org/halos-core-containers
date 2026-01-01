@@ -35,7 +35,7 @@ services:
       - /var/run/docker.sock:/var/run/docker.sock:ro
       - ${CONTAINER_DATA_ROOT}/data:/appdata
       # Custom entrypoint that patches nginx to serve local assets
-      - ./custom-entrypoint.sh:/custom-entrypoint.sh:ro
+      - ./assets/custom-entrypoint.sh:/custom-entrypoint.sh:ro
       # Asset volumes (served via patched nginx)
       - /usr/share/pixmaps:/usr/share/pixmaps:ro
       - /usr/share/halos-homarr-branding:/usr/share/halos-homarr-branding:ro

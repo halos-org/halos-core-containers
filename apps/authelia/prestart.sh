@@ -17,7 +17,7 @@ set +a
 
 # CONTAINER_DATA_ROOT already points to the data directory
 DATA_DIR="${CONTAINER_DATA_ROOT}"
-TEMPLATE_FILE="${SCRIPT_DIR}/configuration.yml.template"
+TEMPLATE_FILE="${SCRIPT_DIR}/assets/configuration.yml.template"
 SECRETS_FILE="${DATA_DIR}/secrets.env"
 CONFIG_FILE="${DATA_DIR}/configuration.yml"
 OIDC_CLIENTS_FILE="${DATA_DIR}/oidc-clients.yml"

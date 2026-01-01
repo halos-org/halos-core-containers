@@ -1,6 +1,6 @@
 name: Homarr
 app_id: homarr
-version: 1.45.3-10
+version: 1.45.3-11
 upstream_version: 1.45.3
 description: Dashboard landing page for HaLOS
 long_description: |
