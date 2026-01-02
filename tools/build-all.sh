@@ -21,9 +21,13 @@ fi
 VERSION=$(cat VERSION)
 echo "Package version: $VERSION"
 
-# Generate changelog
-echo "Generating debian/changelog..."
-.github/scripts/generate-changelog.sh --upstream "$VERSION" --revision 1
+# Generate changelog only if not already present (CI generates it with correct revision)
+if [ ! -f debian/changelog ]; then
+    echo "Generating debian/changelog..."
+    .github/scripts/generate-changelog.sh --upstream "$VERSION" --revision 1
+else
+    echo "Using existing debian/changelog"
+fi
 
 # Clean build directory
 rm -rf "$BUILD_DIR"
