@@ -454,7 +454,7 @@ if [ ! -f "${AUTHELIA_DATA}/users_database.yml" ]; then
 users:
   admin:
     displayname: "Administrator"
-    email: admin@halos.local
+    email: admin@${HALOS_DOMAIN}
     password: "${INITIAL_HASH}"
     groups:
       - admins

@@ -58,7 +58,7 @@ services:
       - traefik.http.routers.authelia-secure.entrypoints=websecure
       - traefik.http.routers.authelia-secure.tls=true
       - traefik.http.services.authelia.loadbalancer.server.port=9091
-      # mDNS subdomain - halos-mdns-publisher uses this to publish auth.halos.local
+      # mDNS subdomain - halos-mdns-publisher publishes auth.${HALOS_DOMAIN}
       - halos.subdomain=auth
     logging:
       driver: journald
@@ -96,6 +96,8 @@ services:
       - AUTH_OIDC_FORCE_USERINFO=${AUTH_OIDC_FORCE_USERINFO:-}
       - AUTH_OIDC_ENABLE_DANGEROUS_ACCOUNT_LINKING=${AUTH_OIDC_ENABLE_DANGEROUS_ACCOUNT_LINKING:-}
       - AUTH_LOGOUT_REDIRECT_URL=${AUTH_LOGOUT_REDIRECT_URL}
+      # Auto-redirect to OIDC provider on login page for seamless SSO
+      - AUTH_OIDC_AUTO_LOGIN=true
     ports:
       # Expose to localhost only for homarr-container-adapter
       - "127.0.0.1:7575:7575"
@@ -116,13 +118,12 @@ services:
       - traefik.http.routers.homarr.rule=Host(`${HALOS_DOMAIN}`)
       - traefik.http.routers.homarr.entrypoints=web
       - traefik.http.routers.homarr.middlewares=redirect-to-https@file
-      # HTTPS router with ForwardAuth - all requests go through Authelia first
+      # HTTPS router - Homarr handles auth via OIDC (no ForwardAuth needed)
       - traefik.http.routers.homarr-secure.rule=Host(`${HALOS_DOMAIN}`)
       - traefik.http.routers.homarr-secure.entrypoints=websecure
       - traefik.http.routers.homarr-secure.tls=true
-      - traefik.http.routers.homarr-secure.middlewares=authelia@file
       - traefik.http.services.homarr.loadbalancer.server.port=7575
-      # mDNS subdomain - empty means root domain (halos.local)
+      # mDNS subdomain - empty means root domain (${HALOS_DOMAIN})
       - halos.subdomain=
     logging:
       driver: journald
