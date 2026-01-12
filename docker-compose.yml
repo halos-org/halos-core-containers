@@ -1,6 +1,6 @@
 services:
   traefik:
-    image: traefik:v3.6
+    image: traefik:v3.6.6
     container_name: traefik
     restart: unless-stopped
     depends_on:
@@ -30,7 +30,7 @@ services:
         tag: "{{.Name}}"
 
   authelia:
-    image: authelia/authelia:4.39
+    image: authelia/authelia:4.39.15
     container_name: authelia
     restart: unless-stopped
     volumes:
@@ -66,8 +66,7 @@ services:
         tag: "{{.Name}}"
 
   homarr:
-    # Using hatlabs fork until homarr-labs/homarr#4372 is merged
-    image: ghcr.io/hatlabs/homarr:api-key-test
+    image: ghcr.io/homarr-labs/homarr:v1.50.0
     container_name: homarr
     restart: unless-stopped
     depends_on:
