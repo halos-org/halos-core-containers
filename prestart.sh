@@ -40,7 +40,7 @@ TRAEFIK_DATA="${CONTAINER_DATA_ROOT}/traefik"
 AUTHELIA_DATA="${CONTAINER_DATA_ROOT}/authelia"
 HOMARR_DATA="${CONTAINER_DATA_ROOT}/homarr"
 
-mkdir -p "${TRAEFIK_DATA}" "${AUTHELIA_DATA}" "${HOMARR_DATA}"
+mkdir -p "${TRAEFIK_DATA}" "${AUTHELIA_DATA}" "${AUTHELIA_DATA}/valkey" "${HOMARR_DATA}"
 
 # ============================================
 # Traefik Setup
@@ -318,6 +318,7 @@ if [ ! -f "${AUTHELIA_SECRETS_FILE}" ]; then
     OIDC_HMAC_SECRET=$(openssl rand -hex 32)
     STORAGE_ENCRYPTION_KEY=$(openssl rand -hex 32)
     RESET_PASSWORD_JWT_SECRET=$(openssl rand -hex 32)
+    REDIS_PASSWORD=$(openssl rand -hex 32)
     OIDC_PRIVATE_KEY=$(openssl genrsa 4096 2>/dev/null)
 
     cat > "${AUTHELIA_SECRETS_FILE}" << EOF
@@ -325,10 +326,18 @@ SESSION_SECRET="${SESSION_SECRET}"
 OIDC_HMAC_SECRET="${OIDC_HMAC_SECRET}"
 STORAGE_ENCRYPTION_KEY="${STORAGE_ENCRYPTION_KEY}"
 RESET_PASSWORD_JWT_SECRET="${RESET_PASSWORD_JWT_SECRET}"
+REDIS_PASSWORD="${REDIS_PASSWORD}"
 EOF
     echo "${OIDC_PRIVATE_KEY}" > "${AUTHELIA_DATA}/oidc_private_key.pem"
     chmod 600 "${AUTHELIA_SECRETS_FILE}" "${AUTHELIA_DATA}/oidc_private_key.pem"
     echo "Authelia secrets generated"
+fi
+
+# Migration: Add REDIS_PASSWORD to existing secrets file if missing
+if ! grep -q "^REDIS_PASSWORD=" "${AUTHELIA_SECRETS_FILE}" 2>/dev/null; then
+    echo "Adding REDIS_PASSWORD to existing secrets..."
+    REDIS_PASSWORD=$(openssl rand -hex 32)
+    echo "REDIS_PASSWORD=\"${REDIS_PASSWORD}\"" >> "${AUTHELIA_SECRETS_FILE}"
 fi
 
 # Load secrets
@@ -463,6 +472,7 @@ process_authelia_template() {
     template="${template//\$\{OIDC_HMAC_SECRET\}/${OIDC_HMAC_SECRET}}"
     template="${template//\$\{STORAGE_ENCRYPTION_KEY\}/${STORAGE_ENCRYPTION_KEY}}"
     template="${template//\$\{RESET_PASSWORD_JWT_SECRET\}/${RESET_PASSWORD_JWT_SECRET}}"
+    template="${template//\$\{REDIS_PASSWORD\}/${REDIS_PASSWORD}}"
     template="${template//\$\{HALOS_DOMAIN\}/${HALOS_DOMAIN}}"
 
     echo "${template}" | awk -v key="${indented_key}" '
@@ -476,6 +486,9 @@ process_authelia_template() {
 
 process_authelia_template
 merge_oidc_clients
+
+# Write Redis password to runtime environment for docker-compose
+echo "REDIS_PASSWORD=${REDIS_PASSWORD}" >> "${RUNTIME_ENV}"
 
 # Create initial admin user if not exists
 if [ ! -f "${AUTHELIA_DATA}/users_database.yml" ]; then

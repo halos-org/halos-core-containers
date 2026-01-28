@@ -29,6 +29,13 @@ session:
   expiration: 8760h      # 1 year
   inactivity: 8760h      # 1 year (effectively disables idle timeout)
   remember_me: 8760h     # 1 year
+  # Redis backend for session persistence across container restarts
+  redis:
+    host: authelia-valkey
+    port: 6379
+    password: '${REDIS_PASSWORD}'
+    timeout: 5s
+    maximum_active_connections: 8
   cookies:
     - domain: '${HALOS_DOMAIN}'
       authelia_url: 'https://auth.${HALOS_DOMAIN}'

@@ -33,6 +33,9 @@ services:
     image: authelia/authelia:4.39.15
     container_name: authelia
     restart: unless-stopped
+    depends_on:
+      authelia-valkey:
+        condition: service_healthy
     volumes:
       - ${CONTAINER_DATA_ROOT}/authelia:/config
     environment:
@@ -47,6 +50,7 @@ services:
       retries: 3
     networks:
       - proxy
+      - authelia-internal
     labels:
       - traefik.enable=true
       # HTTP router (redirects to HTTPS)
@@ -60,6 +64,30 @@ services:
       - traefik.http.services.authelia.loadbalancer.server.port=9091
       # mDNS subdomain - halos-mdns-publisher publishes auth.${HALOS_DOMAIN}
       - halos.subdomain=auth
+    logging:
+      driver: journald
+      options:
+        tag: "{{.Name}}"
+
+  authelia-valkey:
+    image: valkey/valkey:8.1.5-alpine
+    container_name: authelia-valkey
+    restart: unless-stopped
+    volumes:
+      - ${CONTAINER_DATA_ROOT}/authelia/valkey:/data
+    command: >-
+      valkey-server
+      --save ""
+      --appendonly yes
+      --requirepass "${REDIS_PASSWORD}"
+      --loglevel warning
+    healthcheck:
+      test: ["CMD", "valkey-cli", "-a", "${REDIS_PASSWORD}", "--no-auth-warning", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+    networks:
+      - authelia-internal
     logging:
       driver: journald
       options:
@@ -133,3 +161,7 @@ networks:
   proxy:
     name: halos-proxy-network
     driver: bridge
+  authelia-internal:
+    # Internal network for Authelia <-> Valkey communication only
+    driver: bridge
+    internal: true
