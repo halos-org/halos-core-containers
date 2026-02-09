@@ -125,6 +125,8 @@ services:
       - AUTH_LOGOUT_REDIRECT_URL=${AUTH_LOGOUT_REDIRECT_URL}
       # Auto-redirect to OIDC provider on login page for seamless SSO
       - AUTH_OIDC_AUTO_LOGIN=true
+      # Suppress external network requests (icon updates, analytics, update checks)
+      - NO_EXTERNAL_CONNECTION=true
     ports:
       # Expose to localhost only for homarr-container-adapter
       - "127.0.0.1:7575:7575"
