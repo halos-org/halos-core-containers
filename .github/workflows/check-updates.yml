@@ -1,0 +1,19 @@
+name: Check Container Image Updates
+
+on:
+  schedule:
+    - cron: '0 6 * * *'  # Daily 06:00 UTC
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.repository }}-check-image-updates
+  cancel-in-progress: true
+
+jobs:
+  check-updates:
+    uses: hatlabs/shared-workflows/.github/workflows/check-image-updates.yml@main
+    with:
+      compose-pattern: docker-compose.yml
+    permissions:
+      contents: write
+      pull-requests: write
