@@ -4,7 +4,7 @@ Priority: optional
 Maintainer: Hat Labs <info@hatlabs.fi>
 Build-Depends: debhelper (>= 12)
 Standards-Version: 4.5.0
-Homepage: https://github.com/hatlabs/halos-core-containers
+Homepage: https://github.com/halos-org/halos-core-containers
 
 Package: halos-core-containers
 Architecture: all

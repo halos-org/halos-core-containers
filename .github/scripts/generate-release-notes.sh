@@ -90,8 +90,8 @@ sudo apt install halos-homarr-container halos-traefik-container halos-authelia-c
 ### Development
 
 For development setup and build commands, see:
-- [README.md](https://github.com/hatlabs/halos-core-containers/blob/main/README.md) - Installation and usage
-- [AGENTS.md](https://github.com/hatlabs/halos-core-containers/blob/main/AGENTS.md) - Development guide
+- [README.md](https://github.com/halos-org/halos-core-containers/blob/main/README.md) - Installation and usage
+- [AGENTS.md](https://github.com/halos-org/halos-core-containers/blob/main/AGENTS.md) - Development guide
 EOF
     ;;
 
@@ -123,8 +123,8 @@ sudo apt install halos-homarr-container halos-traefik-container halos-authelia-c
 ### Development
 
 For development setup and build commands, see:
-- [README.md](https://github.com/hatlabs/halos-core-containers/blob/main/README.md) - Installation and usage
-- [AGENTS.md](https://github.com/hatlabs/halos-core-containers/blob/main/AGENTS.md) - Development guide
+- [README.md](https://github.com/halos-org/halos-core-containers/blob/main/README.md) - Installation and usage
+- [AGENTS.md](https://github.com/halos-org/halos-core-containers/blob/main/AGENTS.md) - Development guide
 EOF
     ;;
 

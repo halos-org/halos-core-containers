@@ -11,7 +11,7 @@ concurrency:
 
 jobs:
   check-updates:
-    uses: hatlabs/shared-workflows/.github/workflows/check-image-updates.yml@main
+    uses: halos-org/shared-workflows/.github/workflows/check-image-updates.yml@main
     with:
       compose-pattern: docker-compose.yml
     permissions:

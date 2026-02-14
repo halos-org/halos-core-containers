@@ -13,7 +13,7 @@ long_description: |
   Traefik handles HTTPS termination and routing, Authelia provides
   authentication, and Homarr serves as the main user interface.
 
-homepage: https://github.com/hatlabs/halos-core-containers
+homepage: https://github.com/halos-org/halos-core-containers
 maintainer: Hat Labs <info@hatlabs.fi>
 license: MIT
 

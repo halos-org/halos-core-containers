@@ -1,7 +1,7 @@
 Format: https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/
 Upstream-Name: halos-core-containers
 Upstream-Contact: Hat Labs <info@hatlabs.fi>
-Source: https://github.com/hatlabs/halos-core-containers
+Source: https://github.com/halos-org/halos-core-containers
 
 Files: *
 Copyright: 2024-2025 Hat Labs
