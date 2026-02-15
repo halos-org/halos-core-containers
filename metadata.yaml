@@ -14,7 +14,7 @@ long_description: |
   authentication, and Homarr serves as the main user interface.
 
 homepage: https://github.com/halos-org/halos-core-containers
-maintainer: Hat Labs <info@hatlabs.fi>
+maintainer: Matti Airas <matti.airas@hatlabs.fi>
 license: MIT
 
 tags:

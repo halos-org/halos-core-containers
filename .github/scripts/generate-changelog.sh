@@ -7,7 +7,7 @@ set -euo pipefail
 UPSTREAM=""
 REVISION="1"
 PKG_NAME="halos-core-containers"
-MAINTAINER="Hat Labs <info@hatlabs.fi>"
+MAINTAINER="Matti Airas <matti.airas@hatlabs.fi>"
 
 while [[ $# -gt 0 ]]; do
     case $1 in
