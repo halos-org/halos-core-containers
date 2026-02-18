@@ -2,6 +2,7 @@ services:
   traefik:
     image: traefik:v3.6.8
     container_name: traefik
+    init: true
     restart: unless-stopped
     depends_on:
       authelia:
@@ -32,6 +33,7 @@ services:
   authelia:
     image: authelia/authelia:4.39.15
     container_name: authelia
+    init: true
     restart: unless-stopped
     depends_on:
       authelia-valkey:
@@ -72,6 +74,7 @@ services:
   authelia-valkey:
     image: valkey/valkey:9.0.2-alpine
     container_name: authelia-valkey
+    init: true
     restart: unless-stopped
     volumes:
       - ${CONTAINER_DATA_ROOT}/authelia/valkey:/data
@@ -96,11 +99,12 @@ services:
   homarr:
     image: ghcr.io/homarr-labs/homarr:v1.53.1
     container_name: homarr
+    init: true
     restart: unless-stopped
     depends_on:
       - traefik
     entrypoint: ["/custom-entrypoint.sh"]
-    command: ["sh", "run.sh"]
+    command: ["bash", "run.sh"]
     extra_hosts:
       - "host.docker.internal:host-gateway"
       # Allow Homarr to resolve auth subdomain for OIDC (mDNS doesn't work in containers)
