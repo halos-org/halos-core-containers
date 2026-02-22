@@ -97,7 +97,7 @@ services:
         tag: "{{.Name}}"
 
   homarr:
-    image: ghcr.io/homarr-labs/homarr:v1.53.1
+    image: ghcr.io/homarr-labs/homarr:v1.53.2
     container_name: homarr
     init: true
     restart: unless-stopped
