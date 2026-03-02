@@ -131,6 +131,15 @@ http:
         - cockpit-redirect
       service: noop@internal
       priority: 100
+    cockpit-redirect-bare:
+      rule: "Host(\`${HALOS_DOMAIN}\`) && Path(\`/cockpit\`)"
+      entrypoints:
+        - websecure
+      tls: {}
+      middlewares:
+        - cockpit-add-slash
+      service: noop@internal
+      priority: 101
     cockpit-redirect-http:
       rule: "Host(\`${HALOS_DOMAIN}\`) && PathPrefix(\`/cockpit/\`)"
       entrypoints:
@@ -139,11 +148,24 @@ http:
         - redirect-to-https
       service: noop@internal
       priority: 100
+    cockpit-redirect-bare-http:
+      rule: "Host(\`${HALOS_DOMAIN}\`) && Path(\`/cockpit\`)"
+      entrypoints:
+        - web
+      middlewares:
+        - redirect-to-https
+      service: noop@internal
+      priority: 101
   middlewares:
     cockpit-redirect:
       redirectRegex:
         regex: "^https://([^/]+)/cockpit/(.*)"
-        replacement: "https://\\\${1}:9090/\\\${2}"
+        replacement: "https://\${1}:9090/\${2}"
+        permanent: false
+    cockpit-add-slash:
+      redirectRegex:
+        regex: "^https://([^/]+)/cockpit$"
+        replacement: "https://\${1}/cockpit/"
         permanent: false
 EOF
 chmod 644 "${COCKPIT_CONFIG_FILE}"

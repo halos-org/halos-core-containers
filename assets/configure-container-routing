@@ -171,6 +171,15 @@ http:
         - redirect-${app_id}
       service: noop@internal
       priority: 100
+    redirect-${app_id}-bare:
+      rule: "Host(\`${HALOS_DOMAIN}\`) && Path(\`/${app_id}\`)"
+      entrypoints:
+        - websecure
+      tls: {}
+      middlewares:
+        - add-slash-${app_id}
+      service: noop@internal
+      priority: 101
     redirect-${app_id}-http:
       rule: "Host(\`${HALOS_DOMAIN}\`) && PathPrefix(\`/${app_id}/\`)"
       entrypoints:
@@ -179,11 +188,24 @@ http:
         - redirect-to-https
       service: noop@internal
       priority: 100
+    redirect-${app_id}-bare-http:
+      rule: "Host(\`${HALOS_DOMAIN}\`) && Path(\`/${app_id}\`)"
+      entrypoints:
+        - web
+      middlewares:
+        - redirect-to-https
+      service: noop@internal
+      priority: 101
   middlewares:
     redirect-${app_id}:
       redirectRegex:
         regex: "^https://([^/]+)/${app_id}/(.*)"
-        replacement: "https://\\\${1}:${external_port}/\\\${2}"
+        replacement: "https://\${1}:${external_port}/\${2}"
+        permanent: false
+    add-slash-${app_id}:
+      redirectRegex:
+        regex: "^https://([^/]+)/${app_id}$"
+        replacement: "https://\${1}/${app_id}/"
         permanent: false
 EOF
 
