@@ -6,7 +6,7 @@ http:
   middlewares:
     authelia:
       forwardAuth:
-        address: "http://authelia:9091/auth/api/authz/forward-auth"
+        address: "http://authelia:9091/sso/api/authz/forward-auth"
         trustForwardHeader: true
         authResponseHeaders:
           - Remote-User

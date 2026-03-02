@@ -139,7 +139,7 @@ http:
   middlewares:
     authelia-${app_id}:
       forwardAuth:
-        address: "http://authelia:9091/auth/api/authz/forward-auth"
+        address: "http://authelia:9091/sso/api/authz/forward-auth"
         trustForwardHeader: true
         authResponseHeaders:${headers}
 EOF

@@ -5,7 +5,7 @@
 theme: auto
 
 server:
-  address: tcp://0.0.0.0:9091/auth
+  address: tcp://0.0.0.0:9091/sso
 
 log:
   level: info
@@ -38,7 +38,7 @@ session:
     maximum_active_connections: 8
   cookies:
     - domain: '${HALOS_DOMAIN}'
-      authelia_url: 'https://${HALOS_DOMAIN}/auth'
+      authelia_url: 'https://${HALOS_DOMAIN}/sso'
       default_redirection_url: 'https://${HALOS_DOMAIN}'
 
 storage:

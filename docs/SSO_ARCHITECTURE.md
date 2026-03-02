@@ -202,7 +202,7 @@ Applications with native OIDC support (e.g., Homarr):
      │  1. GET boat.local           │                │
      │─────────────>│───────────────────────────────>│
      │              │               │  2. No session │
-     │  3. Redirect to auth.boat.local/oidc/auth     │
+     │  3. Redirect to boat.local/sso/oidc/auth       │
      │<──────────────────────────────────────────────│
      │  4. Authorization request    │                │
      │─────────────────────────────>│                │
@@ -346,7 +346,7 @@ http:
   middlewares:
     authelia:
       forwardAuth:
-        address: "http://authelia:9091/api/authz/forward-auth"
+        address: "http://authelia:9091/sso/api/authz/forward-auth"
         trustForwardHeader: true
         authResponseHeaders:
           - Remote-User
@@ -365,7 +365,7 @@ http:
   middlewares:
     authelia-grafana:
       forwardAuth:
-        address: "http://authelia:9091/api/authz/forward-auth"
+        address: "http://authelia:9091/sso/api/authz/forward-auth"
         trustForwardHeader: true
         authResponseHeaders:
           - X-Forwarded-User      # Mapped from Remote-User

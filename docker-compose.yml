@@ -57,11 +57,11 @@ services:
     labels:
       - traefik.enable=true
       # HTTP router (redirects to HTTPS)
-      - traefik.http.routers.authelia.rule=Host(`${HALOS_DOMAIN}`) && PathPrefix(`/auth/`)
+      - traefik.http.routers.authelia.rule=Host(`${HALOS_DOMAIN}`) && PathPrefix(`/sso/`)
       - traefik.http.routers.authelia.entrypoints=web
       - traefik.http.routers.authelia.middlewares=redirect-to-https@file
-      # HTTPS router — Authelia served under /auth/ path prefix
-      - traefik.http.routers.authelia-secure.rule=Host(`${HALOS_DOMAIN}`) && PathPrefix(`/auth/`)
+      # HTTPS router — Authelia served under /sso/ path prefix
+      - traefik.http.routers.authelia-secure.rule=Host(`${HALOS_DOMAIN}`) && PathPrefix(`/sso/`)
       - traefik.http.routers.authelia-secure.entrypoints=websecure
       - traefik.http.routers.authelia-secure.tls=true
       - traefik.http.services.authelia.loadbalancer.server.port=9091

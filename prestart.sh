@@ -170,7 +170,7 @@ http:
 EOF
 chmod 644 "${COCKPIT_CONFIG_FILE}"
 
-# Authelia routing is done via Docker labels in docker-compose.yml (PathPrefix /auth/)
+# Authelia routing is done via Docker labels in docker-compose.yml (PathPrefix /sso/)
 
 # Install dynamic config files from package
 if [ -d "${DYNAMIC_SRC_DIR}" ]; then
@@ -273,12 +273,12 @@ fi
 # Set OIDC configuration for Homarr
 declare -A HOMARR_SSO_CONFIG=(
     ["AUTH_PROVIDERS"]="oidc"
-    ["AUTH_OIDC_ISSUER"]="https://${HALOS_DOMAIN}/auth"
+    ["AUTH_OIDC_ISSUER"]="https://${HALOS_DOMAIN}/sso"
     ["AUTH_OIDC_CLIENT_ID"]="homarr"
     ["AUTH_OIDC_CLIENT_SECRET"]="${OIDC_CLIENT_SECRET}"
     ["AUTH_OIDC_CLIENT_NAME"]="HaLOS"
     ["AUTH_OIDC_SCOPE_OVERWRITE"]="openid profile email groups"
-    ["AUTH_LOGOUT_REDIRECT_URL"]="https://${HALOS_DOMAIN}/auth/logout"
+    ["AUTH_LOGOUT_REDIRECT_URL"]="https://${HALOS_DOMAIN}/sso/logout"
     ["AUTH_OIDC_FORCE_USERINFO"]="true"
     ["AUTH_OIDC_ENABLE_DANGEROUS_ACCOUNT_LINKING"]="true"
 )

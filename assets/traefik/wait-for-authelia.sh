@@ -5,7 +5,7 @@
 
 set -e
 
-AUTHELIA_URL="${AUTHELIA_HEALTH_URL:-http://authelia:9091/api/health}"
+AUTHELIA_URL="${AUTHELIA_HEALTH_URL:-http://authelia:9091/sso/api/health}"
 MAX_WAIT="${AUTHELIA_WAIT_TIMEOUT:-60}"
 WAIT_INTERVAL=1
 ELAPSED=0
