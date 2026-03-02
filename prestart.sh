@@ -273,7 +273,7 @@ fi
 # Set OIDC configuration for Homarr
 declare -A HOMARR_SSO_CONFIG=(
     ["AUTH_PROVIDERS"]="oidc"
-    ["AUTH_OIDC_ISSUER"]="https://${HALOS_DOMAIN}/auth/"
+    ["AUTH_OIDC_ISSUER"]="https://${HALOS_DOMAIN}/auth"
     ["AUTH_OIDC_CLIENT_ID"]="homarr"
     ["AUTH_OIDC_CLIENT_SECRET"]="${OIDC_CLIENT_SECRET}"
     ["AUTH_OIDC_CLIENT_NAME"]="HaLOS"
