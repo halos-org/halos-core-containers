@@ -5,7 +5,7 @@
 theme: auto
 
 server:
-  address: tcp://0.0.0.0:9091/auth
+  address: tcp://0.0.0.0:9091/auth/
 
 log:
   level: info
