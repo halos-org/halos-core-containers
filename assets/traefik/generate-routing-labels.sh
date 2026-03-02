@@ -27,7 +27,7 @@ if [ -z "${HALOS_DOMAIN}" ]; then
 fi
 
 log() {
-    echo "[generate-routing-labels] $1"
+    echo "[generate-routing-labels] $1" >&2
 }
 
 # Main: Process all routing files using configure-container-routing

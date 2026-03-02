@@ -36,7 +36,7 @@ if [ -z "${HALOS_DOMAIN}" ]; then
 fi
 
 log() {
-    echo "[configure-container-routing] $1"
+    echo "[configure-container-routing] $1" >&2
 }
 
 # Parse YAML value - simple grep-based parser for our known format
