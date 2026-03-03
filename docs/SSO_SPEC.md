@@ -32,17 +32,7 @@ Authelia provides the authentication layer with:
 - Session management with cookie-based persistence
 - Single-factor authentication (password only for MVP)
 
-### 3. mDNS Subdomain Advertising
-
-To enable subdomain-based routing on local networks without DNS infrastructure:
-
-- Dynamic advertisement of subdomains via Avahi/mDNS
-- Automatic registration when containers start
-- Automatic cleanup when containers stop
-- Support for the `.local` domain standard
-- Works with any device hostname (not hardcoded)
-
-### 4. First-Boot Credential Synchronization
+### 3. First-Boot Credential Synchronization
 
 Initial setup creates matching admin credentials across all systems:
 
@@ -50,7 +40,7 @@ Initial setup creates matching admin credentials across all systems:
 - Create corresponding user in Authelia's user database
 - Ensure password hashes use Authelia-compatible format (argon2id)
 
-### 5. Container App Integration
+### 4. Container App Integration
 
 All container applications with web interfaces integrate with the SSO system:
 
@@ -207,7 +197,6 @@ The combined RAM footprint for Traefik and Authelia must remain under 100 MB to 
 ### Network Environment
 
 - Local network only (no public internet exposure)
-- mDNS-capable network (standard home/office networks)
 - HTTP and HTTPS supported (TLS termination at Traefik)
 
 ## Non-Functional Requirements
@@ -221,29 +210,19 @@ The system must complete initial setup without user intervention:
 - Start all services in correct order
 - Configure all installed apps for SSO automatically
 
-### mDNS Compatibility
-
-Subdomain resolution must work on:
-
-- macOS (native Bonjour support)
-- Linux with Avahi installed
-- Windows with Bonjour for Windows
-
 ### Service Dependencies
 
 Container startup order must respect dependencies:
 
 1. Traefik starts first (creates shared network)
-2. mDNS publisher starts (enables subdomain resolution)
-3. Authelia starts (identity provider ready)
-4. Application containers start (can authenticate)
+2. Authelia starts (identity provider ready)
+3. Application containers start (can authenticate)
 
 ### Dynamic App Registration
 
 When applications are installed or removed:
 
 - Traefik routing is updated automatically via Docker labels
-- mDNS advertisements are updated automatically
 - OIDC clients are re-registered (for OIDC apps only)
 - No manual configuration required
 
@@ -253,7 +232,7 @@ The following are explicitly excluded from this specification:
 
 ### Custom DNS Domains
 
-Support for custom domains (e.g., `.lan`, `.home`, public domains) via DNS infrastructure is not included. Only mDNS `.local` domains are supported.
+Support for custom domains (e.g., `.lan`, `.home`, public domains) via DNS infrastructure is not included. Only `.local` domains are supported.
 
 ### Two-Factor Authentication
 

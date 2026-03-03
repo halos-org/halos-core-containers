@@ -6,10 +6,10 @@
 
 ## System Overview
 
-The SSO architecture provides unified authentication for all HaLOS web applications. Applications are accessed via subdomains and protected by either Forward Auth (default) or OIDC.
+The SSO architecture provides unified authentication for all HaLOS web applications. Applications are accessed via path-based and port-based routing on `{hostname}.local` and protected by either Forward Auth (default) or OIDC.
 
 ```
-                      mDNS/Avahi (*.{hostname}.local)
+                         {hostname}.local
                                   │
                                   v
 ┌─────────────────────────────────────────────────────────────────┐
@@ -81,27 +81,6 @@ Authelia provides both OIDC provider and Forward Auth functionality.
 - Session data: SQLite database
 - OIDC keys: RSA private key for JWT signing
 
-### mDNS Publisher
-
-**Package**: `halos-mdns-publisher` (native Debian package)
-**Type**: Native systemd service (not a container)
-
-The mDNS publisher enables subdomain resolution on local networks without DNS infrastructure.
-
-**Key responsibilities**:
-- Monitor Docker daemon for container events
-- Read `halos.subdomain` labels from containers
-- Run `avahi-publish` for each subdomain
-- Clean up registrations when containers stop
-
-**Implementation**:
-- Native Rust binary with async Docker API client (bollard)
-- Runs as systemd service with socket activation
-- Spawns `avahi-publish` subprocess per subdomain
-- Automatic health checks and process recovery
-
-**Note**: The mDNS publisher was originally a container but has been migrated to a native package for better system integration and reliability. The native package (`halos-mdns-publisher`) conflicts with and replaces the old container package (`halos-mdns-publisher-container`).
-
 ### Application Containers
 
 Applications integrate with SSO based on their declared authentication mode:
@@ -147,9 +126,7 @@ A Docker bridge network created and owned by the Traefik container.
 
 ### Host Network Access
 
-Two cases require host network interaction:
-1. **mDNS Publisher**: Uses host network mode to access Avahi daemon
-2. **Host networking apps**: Traefik routes to `host.docker.internal` or host IP
+Host networking apps (e.g., Signal K) use `network_mode: host`. Traefik routes to `host.docker.internal` or host IP.
 
 ## Data Flows
 
@@ -482,7 +459,6 @@ routing:
 
 - All containers communicate over isolated Docker network
 - Only Traefik exposes ports to host network
-- mDNS publisher has host network access (required for Avahi)
 - Host networking apps expose their ports but can still use ForwardAuth
 
 ### Limitations
@@ -503,11 +479,9 @@ traefik-container
             ├── grafana-container (ForwardAuth)
             ├── influxdb-container (ForwardAuth)
             └── signalk-container (ForwardAuth, host networking)
-
-halos-mdns-publisher (native service, independent)
 ```
 
-Package dependencies ensure correct installation order. Systemd service dependencies ensure correct startup order. The mDNS publisher runs as an independent native systemd service.
+Package dependencies ensure correct installation order. Systemd service dependencies ensure correct startup order.
 
 ## Dynamic Registration
 
@@ -520,7 +494,6 @@ Package dependencies ensure correct installation order. Systemd service dependen
 5. Authelia restarts, prestart merges OIDC clients
 6. App container starts with Traefik labels
 7. Traefik automatically picks up new route
-8. mDNS publisher advertises new subdomain
 
 ### App Removal
 
@@ -528,7 +501,6 @@ Package dependencies ensure correct installation order. Systemd service dependen
 2. `postrm` removes OIDC snippet from `/etc/halos/oidc-clients.d/`
 3. Authelia restarts, prestart regenerates merged config
 4. Traefik automatically removes route
-5. mDNS publisher removes subdomain advertisement
 
 ### Key Design Principle
 
