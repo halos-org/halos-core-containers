@@ -1,6 +1,6 @@
 services:
   traefik:
-    image: traefik:v3.6.9
+    image: traefik:v3.6.10
     container_name: traefik
     init: true
     restart: unless-stopped
@@ -96,7 +96,7 @@ services:
         tag: "{{.Name}}"
 
   homarr:
-    image: ghcr.io/homarr-labs/homarr:v1.54.0
+    image: ghcr.io/homarr-labs/homarr:v1.55.0
     container_name: homarr
     init: true
     restart: unless-stopped
