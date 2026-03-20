@@ -297,7 +297,7 @@ generate_override() {
         fi
     fi
 
-    # Generate override file — router on dedicated entrypoint (no HTTP router needed)
+    # Generate override file — routers on dedicated entrypoint
     local override_file="${OUTPUT_DIR}/${app_id}.yml"
 
     cat > "${override_file}" << EOF
@@ -314,7 +314,22 @@ services:
       traefik.http.routers.${app_id}-secure.rule: "PathPrefix(\`/\`)"
       traefik.http.routers.${app_id}-secure.entrypoints: "${entrypoint}"
       traefik.http.routers.${app_id}-secure.tls: "true"
+      traefik.http.routers.${app_id}-secure.priority: "2"
 ${middleware_label}
+      # HTTP->HTTPS redirect on same entrypoint (for clients that probe with plain HTTP).
+      # Lower priority than the secure router so HTTPS requests always match the
+      # authenticated router above. The noop@internal service ensures no backend
+      # access if a request somehow reaches this router without being redirected.
+      # NOTE: \$\$ is needed because Docker Compose interpolates $, and the heredoc
+      # does not escape it further — so \$\$ becomes a literal $ in the label value.
+      traefik.http.routers.${app_id}-http-redirect.rule: "PathPrefix(\`/\`)"
+      traefik.http.routers.${app_id}-http-redirect.entrypoints: "${entrypoint}"
+      traefik.http.routers.${app_id}-http-redirect.priority: "1"
+      traefik.http.routers.${app_id}-http-redirect.middlewares: "${app_id}-http-to-https"
+      traefik.http.routers.${app_id}-http-redirect.service: "noop@internal"
+      traefik.http.middlewares.${app_id}-http-to-https.redirectregex.regex: "^http://(.*)"
+      traefik.http.middlewares.${app_id}-http-to-https.redirectregex.replacement: "https://\$\${1}"
+      traefik.http.middlewares.${app_id}-http-to-https.redirectregex.permanent: "false"
       # Backend service
 ${backend_label}
 ${scheme_label}
