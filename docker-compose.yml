@@ -160,6 +160,22 @@ services:
       options:
         tag: "{{.Name}}"
 
+  autoheal:
+    image: willfarrell/autoheal:1.2.0
+    container_name: autoheal
+    restart: unless-stopped
+    network_mode: "none"
+    environment:
+      - AUTOHEAL_CONTAINER_LABEL=all
+      - AUTOHEAL_INTERVAL=30
+      - AUTOHEAL_START_PERIOD=120
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    logging:
+      driver: journald
+      options:
+        tag: "{{.Name}}"
+
 networks:
   proxy:
     name: halos-proxy-network
