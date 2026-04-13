@@ -65,5 +65,7 @@ entryPoints:
   app-4450:
     address: ":4450"
 
+ping: {}
+
 log:
   level: INFO

@@ -24,6 +24,12 @@ services:
     extra_hosts:
       # Required for host networking apps (Traefik routes to host IP)
       - "host.docker.internal:host-gateway"
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:8080/ping"]
+      interval: 10s
+      timeout: 5s
+      start_period: 10s
+      retries: 3
     networks:
       - proxy
     logging:
@@ -142,6 +148,12 @@ services:
       - /usr/share/pixmaps:/usr/share/pixmaps:ro
       - /usr/share/halos-homarr-branding:/usr/share/halos-homarr-branding:ro
       - /var/lib/container-apps:/var/lib/container-apps:ro
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:7575"]
+      interval: 10s
+      timeout: 5s
+      start_period: 30s
+      retries: 3
     networks:
       - proxy
     labels:
