@@ -512,6 +512,30 @@ process_authelia_template() {
     local indented_key
     indented_key=$(echo "${OIDC_PRIVATE_KEY}" | awk 'NR==1 {print} NR>1 {print "          " $0}')
 
+    # Build session.cookies block — one entry per configured hostname
+    # (DNS and IP). authelia_url stays templated as ${HALOS_DOMAIN} so it
+    # is substituted to canonical by the global pass below; the OIDC
+    # discovery-served authorization_endpoint must be single-valued.
+    local cookies_block=""
+    while IFS= read -r host; do
+        [ -z "$host" ] && continue
+        cookies_block+="    - domain: '${host}'"$'\n'
+        cookies_block+="      authelia_url: 'https://\${HALOS_DOMAIN}/sso'"$'\n'
+        cookies_block+="      default_redirection_url: 'https://${host}'"$'\n'
+    done < <(halos_all_hostnames)
+    cookies_block="${cookies_block%$'\n'}"
+
+    # Substitute the marker first so ${HALOS_DOMAIN} inside rendered
+    # cookies is caught by the global pass. Single-shot bash replacement
+    # is used here (rather than awk -v) because mawk/awk implementations
+    # vary on whether -v values may contain newlines.
+    local cookies_marker='    ### HALOS_SESSION_COOKIES ###'
+    if [[ "${template}" != *"${cookies_marker}"* ]]; then
+        echo "ERROR: Authelia template missing HALOS_SESSION_COOKIES marker" >&2
+        return 1
+    fi
+    template="${template/${cookies_marker}/${cookies_block}}"
+
     template="${template//\$\{SESSION_SECRET\}/${SESSION_SECRET}}"
     template="${template//\$\{OIDC_HMAC_SECRET\}/${OIDC_HMAC_SECRET}}"
     template="${template//\$\{STORAGE_ENCRYPTION_KEY\}/${STORAGE_ENCRYPTION_KEY}}"

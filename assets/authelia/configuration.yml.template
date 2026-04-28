@@ -37,9 +37,7 @@ session:
     timeout: 5s
     maximum_active_connections: 8
   cookies:
-    - domain: '${HALOS_DOMAIN}'
-      authelia_url: 'https://${HALOS_DOMAIN}/sso'
-      default_redirection_url: 'https://${HALOS_DOMAIN}'
+    ### HALOS_SESSION_COOKIES ###
 
 storage:
   encryption_key: '${STORAGE_ENCRYPTION_KEY}'
