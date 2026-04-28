@@ -25,8 +25,13 @@
 : "${HALOS_HOSTNAMES_MAX:=16}"
 
 # Pinned regexes (shell-portable; bash =~ ERE).
-# RFC 1123 DNS: at least one dot, labels start/end alphanumeric.
-HALOS_HOSTNAMES_DNS_RE='^[a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(\.[a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)+$'
+# RFC 1123 DNS: labels start/end alphanumeric. Single labels are allowed —
+# many SOHO routers (UniFi, OpenWrt, pfSense, Fritz!Box) integrate DHCP with
+# LAN DNS so a bare hostname like `halosdev` is resolvable, and DHCP option
+# 15 may itself be a single label (e.g., `hal`). Defense-in-depth against
+# shell metacharacters lives in _halos_has_dangerous_chars; the regex is
+# the syntactic check.
+HALOS_HOSTNAMES_DNS_RE='^[a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(\.[a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)*$'
 HALOS_HOSTNAMES_IPV4_RE='^([0-9]{1,3}\.){3}[0-9]{1,3}$'
 # IPv6: rough literal shape (colons and hex). Round-tripped via getent for soundness.
 HALOS_HOSTNAMES_IPV6_RE='^[0-9a-fA-F:]+$'
@@ -49,6 +54,98 @@ _halos_log() {
 
 _halos_short_hostname() {
     hostname -s 2>/dev/null || hostname | cut -d. -f1
+}
+
+# Trim leading/trailing whitespace from $1, echo the result.
+_halos_trim() {
+    local s="$1"
+    s="${s#"${s%%[![:space:]]*}"}"
+    s="${s%"${s##*[![:space:]]}"}"
+    printf '%s' "$s"
+}
+
+# Reject domain values that contain anything outside the DNS label set.
+# Used to defend against /etc/hosts garbage flowing through `hostname -d`
+# or pathological nmcli output. Returns 0 if safe, 1 if not.
+_halos_domain_safe() {
+    local d="$1"
+    [ -z "$d" ] && return 1
+    _halos_has_dangerous_chars "$d" && return 1
+    [[ "$d" =~ ^[a-zA-Z0-9.-]+$ ]] || return 1
+    return 0
+}
+
+# Resolve the device's DNS domain for ${fqdn}/${domain} token expansion.
+# Resolution chain (first non-empty wins):
+#   1. $HALOS_DOMAIN_RESOLVER (test injection seam) — only honored when it
+#      names a defined shell function (declare -F). Production environments
+#      with a stray export are not allowed to short-circuit real resolution
+#      or invoke arbitrary commands.
+#   2. `hostname -d` — admin-set domain via /etc/hosts or hostnamectl.
+#   3. `nmcli -t -f IP4.DOMAIN device show` — DHCP-provided domain across
+#      connected devices; first non-empty value wins. Wrapped in `timeout`
+#      so a hung NetworkManager can't block prestart. Skipped if nmcli is
+#      not installed.
+# Resolved values are validated by _halos_domain_safe; anything that fails
+# (whitespace, NUL, shell metacharacters, non-DNS characters) is treated
+# as no-domain and the chain falls through.
+# Echoes the empty string when nothing resolves; never errors.
+#
+# Cached per `halos_load_hostnames` invocation in HALOS_HOSTNAMES_DOMAIN_CACHE.
+# Note: empty-string is a valid cached value (meaning "resolver completed,
+# no domain available"). The `${VAR+set}` test distinguishes that from
+# unset (not yet resolved). Do not "simplify" to `[ -n "$VAR" ]`.
+_halos_resolve_domain() {
+    if [ -n "${HALOS_HOSTNAMES_DOMAIN_CACHE+set}" ]; then
+        printf '%s' "$HALOS_HOSTNAMES_DOMAIN_CACHE"
+        return 0
+    fi
+
+    local d=""
+
+    # 1. Test injection seam — only when it names a defined shell function.
+    if [ -n "${HALOS_DOMAIN_RESOLVER:-}" ] && declare -F "$HALOS_DOMAIN_RESOLVER" >/dev/null 2>&1; then
+        d="$("$HALOS_DOMAIN_RESOLVER" 2>/dev/null || true)"
+        d="$(_halos_trim "$d")"
+        # Injected resolver output is authoritative (including empty) so
+        # tests can pin empty-domain behavior. No domain-shape validation.
+        HALOS_HOSTNAMES_DOMAIN_CACHE="$d"
+        printf '%s' "$d"
+        return 0
+    fi
+
+    # 2. hostname -d (admin-configured).
+    d="$(_halos_trim "$(hostname -d 2>/dev/null || true)")"
+    if [ -n "$d" ] && ! _halos_domain_safe "$d"; then
+        _halos_log "HALOS_HOSTNAMES_SKIP: hostname -d returned unsafe value, ignoring"
+        d=""
+    fi
+
+    # 3. nmcli (DHCP-provided), with timeout so a hung NM can't block prestart.
+    if [ -z "$d" ] && command -v nmcli >/dev/null 2>&1; then
+        local nmcli_cmd
+        if command -v timeout >/dev/null 2>&1; then
+            nmcli_cmd="timeout 2 nmcli"
+        else
+            nmcli_cmd="nmcli"
+        fi
+        local line value
+        while IFS= read -r line; do
+            # Format: IP4.DOMAIN[N]:value (terse mode, colon-separated).
+            value="${line#*:}"
+            # nmcli emits "--" for empty fields; skip those.
+            if [ -n "$value" ] && [ "$value" != "--" ]; then
+                value="$(_halos_trim "$value")"
+                if _halos_domain_safe "$value"; then
+                    d="$value"
+                    break
+                fi
+            fi
+        done < <($nmcli_cmd -t -f IP4.DOMAIN device show 2>/dev/null || true)
+    fi
+
+    HALOS_HOSTNAMES_DOMAIN_CACHE="$d"
+    printf '%s' "$d"
 }
 
 # Validate IPv4 octet bounds (regex only matches digit shape).
@@ -93,12 +190,42 @@ _halos_has_dangerous_chars() {
     return 1
 }
 
-# Expand the literal token ${hostname} (and only that token) per line.
+# Expand the supported tokens — ${fqdn}, ${domain}, ${hostname} — in a
+# single non-recursive pass.
+#
+# Substitution order matters: ${fqdn} expands first to the resolved
+# <short>.<domain> string directly (not to the literal "${hostname}.${domain}"),
+# so subsequent substitutions can't re-process it. ${domain} expands second,
+# ${hostname} last.
+#
+# When the resolved domain is empty, ${fqdn} expands to "<short>." and
+# ${domain} to "" — both produce strings rejected by the DNS regex. The
+# caller (halos_load_hostnames) detects this case via _halos_lineuses_domain
+# and treats it as a soft-drop instead of a hard fallback.
 _halos_expand_line() {
     local line="$1"
-    local short
+    local short domain fqdn
     short="$(_halos_short_hostname)"
-    printf '%s' "${line//\$\{hostname\}/$short}"
+    domain="$(_halos_resolve_domain)"
+    if [ -n "$domain" ]; then
+        fqdn="${short}.${domain}"
+    else
+        fqdn="${short}."
+    fi
+    line="${line//\$\{fqdn\}/$fqdn}"
+    line="${line//\$\{domain\}/$domain}"
+    line="${line//\$\{hostname\}/$short}"
+    printf '%s' "$line"
+}
+
+# Predicate: does the raw (pre-expansion) line reference a domain-dependent
+# token? Used to classify expansion failures as soft-drop vs hard-fail.
+_halos_lineuses_domain() {
+    local line="$1"
+    case "$line" in
+        *'${fqdn}'*|*'${domain}'*) return 0 ;;
+    esac
+    return 1
 }
 
 # Set fallback state and emit a diagnostic.
@@ -121,6 +248,12 @@ halos_load_hostnames() {
     HALOS_HOSTNAMES_CANONICAL=""
     HALOS_HOSTNAMES_FALLBACK=0
     HALOS_HOSTNAMES_FALLBACK_REASON=""
+    unset HALOS_HOSTNAMES_DOMAIN_CACHE
+    # Prime the domain cache in this (parent) process so each per-line
+    # `expanded="$(_halos_expand_line "$line")"` subshell inherits the
+    # cached value instead of re-running the resolver chain. Without this
+    # step the cache is subshell-local and the resolver runs once per line.
+    _halos_resolve_domain >/dev/null
 
     local file="$HALOS_HOSTNAMES_FILE"
     local default_canonical
@@ -162,6 +295,28 @@ halos_load_hostnames() {
 
         expanded="$(_halos_expand_line "$line")"
 
+        # Soft-drop: a line referencing ${fqdn}/${domain} whose expansion
+        # produced an empty or invalid result is silently skipped. This
+        # lets the shipped default include ${fqdn} without forcing a
+        # whole-file fallback on devices where no domain resolves.
+        # Literal admin-typed entries still fail closed below.
+        local uses_domain=0
+        if _halos_lineuses_domain "$line"; then
+            uses_domain=1
+        fi
+
+        # Empty expansion (bare ${domain} with no resolved domain).
+        if [ -z "$expanded" ]; then
+            if [ "$uses_domain" -eq 1 ]; then
+                _halos_log "HALOS_HOSTNAMES_SKIP: domain unresolved, dropping line: $line"
+                continue
+            fi
+            # A literally empty line is already filtered upstream; treat as invalid.
+            had_invalid=1
+            first_invalid_reason="${first_invalid_reason:-empty entry after expansion}"
+            continue
+        fi
+
         if _halos_has_dangerous_chars "$expanded"; then
             had_invalid=1
             first_invalid_reason="${first_invalid_reason:-rejected entry with dangerous characters}"
@@ -180,6 +335,12 @@ halos_load_hostnames() {
             HALOS_HOSTNAMES_IPS+=("$expanded")
         elif [[ "$expanded" =~ $HALOS_HOSTNAMES_DNS_RE ]]; then
             HALOS_HOSTNAMES_DNS+=("$expanded")
+        elif [ "$uses_domain" -eq 1 ]; then
+            # Domain-dependent line whose expansion failed validation
+            # (e.g., trailing-dot from empty domain). Soft-drop, do not
+            # taint had_invalid.
+            _halos_log "HALOS_HOSTNAMES_SKIP: domain-dependent expansion invalid, dropping line: $line"
+            continue
         else
             had_invalid=1
             first_invalid_reason="${first_invalid_reason:-invalid hostname entry: $expanded}"
@@ -201,6 +362,39 @@ halos_load_hostnames() {
         HALOS_HOSTNAMES_CANONICAL="$default_canonical"
         return 0
     fi
+
+    # Deduplicate (case-insensitive for DNS, exact for IPs), preserving
+    # first-occurrence order. Necessary because admin-typed entries can
+    # collide with token-expanded ones — e.g., a hostnames.conf containing
+    # both `${hostname}.local` and `${fqdn}` on a SOHO LAN where DHCP
+    # option 15 advertises domain=`local` would otherwise produce two
+    # identical entries, leading to duplicate cert SANs and (more
+    # critically) duplicate Authelia cookie blocks that Authelia 4.39+
+    # rejects at config-load time.
+    local -a _deduped
+    local _seen _key h
+    _deduped=()
+    _seen=""
+    for h in "${HALOS_HOSTNAMES_DNS[@]}"; do
+        _key="$(printf '%s' "$h" | tr '[:upper:]' '[:lower:]')"
+        case " $_seen " in
+            *" $_key "*) continue ;;
+        esac
+        _deduped+=("$h")
+        _seen="$_seen $_key"
+    done
+    HALOS_HOSTNAMES_DNS=("${_deduped[@]}")
+
+    _deduped=()
+    _seen=""
+    for h in "${HALOS_HOSTNAMES_IPS[@]}"; do
+        case " $_seen " in
+            *" $h "*) continue ;;
+        esac
+        _deduped+=("$h")
+        _seen="$_seen $h"
+    done
+    HALOS_HOSTNAMES_IPS=("${_deduped[@]}")
 
     HALOS_HOSTNAMES_CANONICAL="${HALOS_HOSTNAMES_DNS[0]}"
     return 0

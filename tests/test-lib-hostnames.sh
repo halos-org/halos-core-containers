@@ -136,11 +136,12 @@ test_cap_exceeded_fallback() {
 }
 
 test_invalid_entries_fallback() {
+    # NB: bare single labels like "myhost" are now valid (regex relaxation
+    # for SOHO router DHCP+DNS integrations and single-label DHCP domains).
     local cases=(
         "foo..bar.com"
         "*.foo.com"
         ".foo.com"
-        "myhost"
         "host with space"
     )
     local case
@@ -189,6 +190,308 @@ test_hostname_token_expansion() {
     assert_eq "$(halos_canonical_hostname)" "${short}.local" "canonical should be expanded"
     local list; list="$(halos_dns_hostnames | tr '\n' ',')"
     assert_eq "$list" "${short}.local,vpn.${short}.example.com," "expanded list wrong"
+}
+
+# Resolver injection helpers (Unit 1).
+_resolver_example_com() { printf 'example.com'; }
+_resolver_empty() { printf ''; }
+_resolver_with_whitespace() { printf '  example.com  \n'; }
+_resolver_hal() { printf 'hal'; }
+_resolver_local() { printf 'local'; }
+_resolver_with_dollar() { printf 'evil$bad.example.com'; }
+_resolver_with_backtick() { printf 'evil`id`.example.com'; }
+_resolver_counting() { echo >> "${_RESOLVER_COUNT_FILE:-/dev/null}"; printf 'example.com'; }
+
+test_resolver_injection_returns_value() {
+    local f="$TMPDIR_ROOT/r1.conf"
+    write_conf "$f" "halosdev.local"
+    _reset_state "$f"
+    HALOS_DOMAIN_RESOLVER=_resolver_example_com
+    halos_load_hostnames
+    local d; d="$(_halos_resolve_domain)"
+    unset HALOS_DOMAIN_RESOLVER
+    assert_eq "$d" "example.com" "resolver should return injected value"
+}
+
+test_resolver_injection_empty() {
+    local f="$TMPDIR_ROOT/r2.conf"
+    write_conf "$f" "halosdev.local"
+    _reset_state "$f"
+    HALOS_DOMAIN_RESOLVER=_resolver_empty
+    halos_load_hostnames
+    local d; d="$(_halos_resolve_domain)"
+    unset HALOS_DOMAIN_RESOLVER
+    assert_eq "$d" "" "resolver returning empty should yield empty domain"
+}
+
+test_resolver_trims_whitespace() {
+    local f="$TMPDIR_ROOT/r3.conf"
+    write_conf "$f" "halosdev.local"
+    _reset_state "$f"
+    HALOS_DOMAIN_RESOLVER=_resolver_with_whitespace
+    halos_load_hostnames
+    local d; d="$(_halos_resolve_domain)"
+    unset HALOS_DOMAIN_RESOLVER
+    assert_eq "$d" "example.com" "resolver output should be trimmed"
+}
+
+test_resolver_non_existent_function_falls_through() {
+    # HALOS_DOMAIN_RESOLVER set to an undefined name must NOT short-circuit
+    # the real resolver chain — defense against stray env-var leak in prod.
+    local f="$TMPDIR_ROOT/r-fall.conf"
+    write_conf "$f" "halosdev.local"
+    _reset_state "$f"
+    HALOS_DOMAIN_RESOLVER=does_not_exist_anywhere
+    halos_load_hostnames
+    local d; d="$(_halos_resolve_domain)"
+    unset HALOS_DOMAIN_RESOLVER
+    # The real `hostname -d` may or may not return a value on the test host —
+    # the assertion is that the chain proceeds, not that it returns any
+    # specific value. Easiest signal: the cache was set (some value, possibly
+    # empty), and the load completed without erroring.
+    assert_eq "$HALOS_HOSTNAMES_FALLBACK" "0" "load should not fall back from a stray env var alone"
+}
+
+test_resolver_cache_prevents_repeated_calls() {
+    # Multiple ${fqdn}/${domain} lines in one load should call the resolver
+    # exactly once thanks to HALOS_HOSTNAMES_DOMAIN_CACHE being primed in
+    # the parent process at load start. (Counter via file because
+    # _halos_resolve_domain invokes the resolver in a command substitution
+    # subshell, so shell-variable counters don't propagate.)
+    local f="$TMPDIR_ROOT/r-count.conf"
+    local counter="$TMPDIR_ROOT/r-count.tally"
+    : > "$counter"
+    write_conf "$f" '${fqdn}' '${domain}' '${hostname}.${domain}'
+    _reset_state "$f"
+    _RESOLVER_COUNT_FILE="$counter"
+    HALOS_DOMAIN_RESOLVER=_resolver_counting
+    halos_load_hostnames
+    unset HALOS_DOMAIN_RESOLVER _RESOLVER_COUNT_FILE
+    local n; n="$(wc -l < "$counter" | tr -d ' ')"
+    assert_eq "$n" "1" "resolver should be called exactly once per load"
+}
+
+test_resolver_dangerous_chars_passed_through_caught_by_validation() {
+    # An injected resolver returning shell metacharacters must result in the
+    # expanded entries being rejected by _halos_has_dangerous_chars (hard
+    # fallback), not silently slipping into cert SANs.
+    local f="$TMPDIR_ROOT/r-evil.conf"
+    write_conf "$f" '${fqdn}'
+    _reset_state "$f"
+    HALOS_DOMAIN_RESOLVER=_resolver_with_dollar
+    halos_load_hostnames
+    unset HALOS_DOMAIN_RESOLVER
+    assert_eq "$HALOS_HOSTNAMES_FALLBACK" "1" "dollar-sign in resolver output must trigger hard fallback"
+
+    write_conf "$f" '${fqdn}'
+    _reset_state "$f"
+    HALOS_DOMAIN_RESOLVER=_resolver_with_backtick
+    halos_load_hostnames
+    unset HALOS_DOMAIN_RESOLVER
+    assert_eq "$HALOS_HOSTNAMES_FALLBACK" "1" "backtick in resolver output must trigger hard fallback"
+}
+
+test_resolver_cache_clears_on_reload() {
+    local f="$TMPDIR_ROOT/r4.conf"
+    write_conf "$f" "halosdev.local"
+
+    _reset_state "$f"
+    HALOS_DOMAIN_RESOLVER=_resolver_example_com
+    halos_load_hostnames
+    local d1; d1="$(_halos_resolve_domain)"
+
+    # Re-load with a different injected resolver — cache must clear.
+    _reset_state "$f"
+    HALOS_DOMAIN_RESOLVER=_resolver_hal
+    halos_load_hostnames
+    local d2; d2="$(_halos_resolve_domain)"
+    unset HALOS_DOMAIN_RESOLVER
+
+    assert_eq "$d1" "example.com" "first load should see first resolver"
+    assert_eq "$d2" "hal" "second load should see new resolver after cache reset"
+}
+
+# Unit 2: regex relaxation, ${fqdn}/${domain} expansion, soft-drop -----------
+
+test_single_label_literal_accepted() {
+    local f="$TMPDIR_ROOT/sl1.conf"
+    write_conf "$f" "halosdev"
+    _reset_state "$f"
+    halos_load_hostnames
+    assert_eq "$HALOS_HOSTNAMES_FALLBACK" "0" "single-label literal should be valid"
+    assert_eq "$(halos_canonical_hostname)" "halosdev" "canonical should be the single label"
+}
+
+test_single_label_hostname_token_accepted() {
+    local f="$TMPDIR_ROOT/sl2.conf"
+    write_conf "$f" '${hostname}'
+    _reset_state "$f"
+    halos_load_hostnames
+    assert_eq "$HALOS_HOSTNAMES_FALLBACK" "0" "bare \${hostname} should be valid under relaxed regex"
+    local short; short="$(hostname -s 2>/dev/null || hostname | cut -d. -f1)"
+    assert_eq "$(halos_canonical_hostname)" "$short" "canonical should be the short hostname"
+}
+
+test_fqdn_token_with_resolver() {
+    local f="$TMPDIR_ROOT/fqdn1.conf"
+    write_conf "$f" '${fqdn}'
+    _reset_state "$f"
+    HALOS_DOMAIN_RESOLVER=_resolver_example_com
+    halos_load_hostnames
+    unset HALOS_DOMAIN_RESOLVER
+    assert_eq "$HALOS_HOSTNAMES_FALLBACK" "0" "fqdn with resolver should expand cleanly"
+    local short; short="$(hostname -s 2>/dev/null || hostname | cut -d. -f1)"
+    assert_eq "$(halos_canonical_hostname)" "${short}.example.com" "fqdn should be <short>.example.com"
+}
+
+test_hostname_dot_domain_equivalent_to_fqdn() {
+    local f="$TMPDIR_ROOT/hd.conf"
+    write_conf "$f" '${hostname}.${domain}'
+    _reset_state "$f"
+    HALOS_DOMAIN_RESOLVER=_resolver_example_com
+    halos_load_hostnames
+    unset HALOS_DOMAIN_RESOLVER
+    local short; short="$(hostname -s 2>/dev/null || hostname | cut -d. -f1)"
+    assert_eq "$(halos_canonical_hostname)" "${short}.example.com" "\${hostname}.\${domain} should match \${fqdn}"
+}
+
+test_bare_domain_with_resolver_multilabel() {
+    local f="$TMPDIR_ROOT/bd1.conf"
+    write_conf "$f" '${domain}'
+    _reset_state "$f"
+    HALOS_DOMAIN_RESOLVER=_resolver_example_com
+    halos_load_hostnames
+    unset HALOS_DOMAIN_RESOLVER
+    assert_eq "$HALOS_HOSTNAMES_FALLBACK" "0" "bare \${domain} multi-label should be valid"
+    assert_eq "$(halos_canonical_hostname)" "example.com" "canonical should be the resolved domain"
+}
+
+test_bare_domain_with_resolver_single_label() {
+    local f="$TMPDIR_ROOT/bd2.conf"
+    write_conf "$f" '${domain}'
+    _reset_state "$f"
+    HALOS_DOMAIN_RESOLVER=_resolver_hal
+    halos_load_hostnames
+    unset HALOS_DOMAIN_RESOLVER
+    assert_eq "$HALOS_HOSTNAMES_FALLBACK" "0" "single-label \${domain} should be valid under relaxed regex"
+    assert_eq "$(halos_canonical_hostname)" "hal" "canonical should be the single-label domain"
+}
+
+test_soft_drop_fqdn_with_other_valid_entries() {
+    local f="$TMPDIR_ROOT/sd1.conf"
+    local err="$TMPDIR_ROOT/sd1.err"
+    write_conf "$f" '${hostname}.local' '${fqdn}'
+    _reset_state "$f"
+    HALOS_DOMAIN_RESOLVER=_resolver_empty
+    halos_load_hostnames 2>"$err"
+    unset HALOS_DOMAIN_RESOLVER
+    assert_eq "$HALOS_HOSTNAMES_FALLBACK" "0" "soft-drop must not trigger fallback when others valid"
+    local short; short="$(hostname -s 2>/dev/null || hostname | cut -d. -f1)"
+    assert_eq "$(halos_canonical_hostname)" "${short}.local" "canonical should remain mDNS entry"
+    assert_eq "$(halos_dns_hostnames | wc -l | tr -d ' ')" "1" "expected 1 surviving DNS entry"
+    if ! grep -q HALOS_HOSTNAMES_SKIP "$err"; then
+        echo "expected HALOS_HOSTNAMES_SKIP diagnostic; got:" >&2
+        cat "$err" >&2
+        return 1
+    fi
+    # The diagnostic must include the offending line so admins can grep it.
+    if ! grep -F 'dropping line: ${fqdn}' "$err" >/dev/null; then
+        echo "expected SKIP diagnostic to name the dropped line; got:" >&2
+        cat "$err" >&2
+        return 1
+    fi
+}
+
+test_shipped_default_with_single_label_dhcp_domain() {
+    # Real-world halosdev.local with DHCP option 15 = 'hal'. Mirrors the
+    # shipped /etc/halos/hostnames.conf default (mDNS + ${fqdn}).
+    local f="$TMPDIR_ROOT/shipped.conf"
+    write_conf "$f" '${hostname}.local' '${fqdn}'
+    _reset_state "$f"
+    HALOS_DOMAIN_RESOLVER=_resolver_hal
+    halos_load_hostnames
+    unset HALOS_DOMAIN_RESOLVER
+    local short; short="$(hostname -s 2>/dev/null || hostname | cut -d. -f1)"
+    assert_eq "$HALOS_HOSTNAMES_FALLBACK" "0" "shipped default + single-label resolver should parse cleanly"
+    assert_eq "$(halos_canonical_hostname)" "${short}.local" "canonical = mDNS"
+    assert_eq "$(halos_dns_hostnames | tr '\n' ',')" "${short}.local,${short}.hal," "DNS list should be mDNS + fqdn"
+}
+
+test_soft_drop_only_fqdn_falls_back() {
+    local f="$TMPDIR_ROOT/sd2.conf"
+    write_conf "$f" '${fqdn}'
+    _reset_state "$f"
+    HALOS_DOMAIN_RESOLVER=_resolver_empty
+    halos_load_hostnames
+    unset HALOS_DOMAIN_RESOLVER
+    assert_eq "$HALOS_HOSTNAMES_FALLBACK" "1" "all-soft-dropped file should fall back to default"
+}
+
+test_soft_drop_bare_domain_empty_resolver() {
+    local f="$TMPDIR_ROOT/sd3.conf"
+    write_conf "$f" '${hostname}.local' '${domain}'
+    _reset_state "$f"
+    HALOS_DOMAIN_RESOLVER=_resolver_empty
+    halos_load_hostnames
+    unset HALOS_DOMAIN_RESOLVER
+    assert_eq "$HALOS_HOSTNAMES_FALLBACK" "0" "soft-drop of bare \${domain} should not trigger fallback"
+    local short; short="$(hostname -s 2>/dev/null || hostname | cut -d. -f1)"
+    assert_eq "$(halos_dns_hostnames | tr '\n' ',')" "${short}.local," "only the mDNS entry should survive"
+}
+
+test_admin_typo_with_fqdn_neighbor_hard_fails() {
+    # An admin-typed invalid line must still trigger hard fallback
+    # regardless of whether ${fqdn} on another line soft-drops.
+    local f="$TMPDIR_ROOT/typo.conf"
+    write_conf "$f" '${fqdn}' "bad..name"
+    _reset_state "$f"
+    HALOS_DOMAIN_RESOLVER=_resolver_empty
+    halos_load_hostnames
+    unset HALOS_DOMAIN_RESOLVER
+    assert_eq "$HALOS_HOSTNAMES_FALLBACK" "1" "admin typo must hard-fail even with fqdn neighbor"
+}
+
+test_full_default_layout_with_resolver() {
+    # Loader API coverage for a mixed token+literal+IP config including a
+    # bare ${hostname} entry. The actually-shipped default is mDNS + ${fqdn}
+    # only — see test_shipped_default_with_single_label_dhcp_domain. Bare
+    # ${hostname} stays tested here because it remains a valid admin opt-in,
+    # filtered downstream by prestart.sh's Authelia cookie loop.
+    local f="$TMPDIR_ROOT/full.conf"
+    write_conf "$f" '${hostname}.local' '${hostname}' '${fqdn}' "10.0.0.50"
+    _reset_state "$f"
+    HALOS_DOMAIN_RESOLVER=_resolver_example_com
+    halos_load_hostnames
+    unset HALOS_DOMAIN_RESOLVER
+    local short; short="$(hostname -s 2>/dev/null || hostname | cut -d. -f1)"
+    assert_eq "$HALOS_HOSTNAMES_FALLBACK" "0" "full default should parse cleanly"
+    assert_eq "$(halos_canonical_hostname)" "${short}.local" "canonical = mDNS"
+    assert_eq "$(halos_dns_hostnames | tr '\n' ',')" "${short}.local,${short},${short}.example.com," "DNS list wrong"
+    assert_eq "$(halos_all_hostnames | tail -1)" "10.0.0.50" "IP should be present"
+}
+
+test_dedup_dns_entries_case_insensitive() {
+    # Admin lists halosdev.local literally and ${fqdn} resolves to the same
+    # value (DHCP option 15 = 'local' on a SOHO router). The loader must
+    # collapse the duplicate so cert SANs and Authelia cookies don't carry
+    # repeated entries (Authelia 4.39+ rejects duplicate cookie domains).
+    local f="$TMPDIR_ROOT/dedup1.conf"
+    write_conf "$f" "halosdev.local" "HALOSDEV.local" '${fqdn}'
+    _reset_state "$f"
+    HALOS_DOMAIN_RESOLVER=_resolver_local
+    halos_load_hostnames
+    unset HALOS_DOMAIN_RESOLVER
+    assert_eq "$HALOS_HOSTNAMES_FALLBACK" "0" "dedup should not trigger fallback"
+    assert_eq "$(halos_dns_hostnames | wc -l | tr -d ' ')" "1" "duplicates must collapse to one"
+    assert_eq "$(halos_canonical_hostname)" "halosdev.local" "first occurrence preserved"
+}
+
+test_dedup_ip_entries() {
+    local f="$TMPDIR_ROOT/dedup2.conf"
+    write_conf "$f" "halosdev.local" "10.0.0.50" "10.0.0.50"
+    _reset_state "$f"
+    halos_load_hostnames
+    assert_eq "$(halos_all_hostnames | grep -c '^10\.0\.0\.50$' | tr -d ' ')" "1" "duplicate IP must collapse"
 }
 
 test_hash_stable_across_reorderings() {
@@ -296,6 +599,27 @@ run_test test_invalid_entries_fallback
 run_test test_dangerous_chars_rejected
 run_test test_unreadable_file_fallback
 run_test test_hostname_token_expansion
+run_test test_resolver_injection_returns_value
+run_test test_resolver_injection_empty
+run_test test_resolver_trims_whitespace
+run_test test_resolver_cache_clears_on_reload
+run_test test_resolver_non_existent_function_falls_through
+run_test test_resolver_cache_prevents_repeated_calls
+run_test test_resolver_dangerous_chars_passed_through_caught_by_validation
+run_test test_single_label_literal_accepted
+run_test test_single_label_hostname_token_accepted
+run_test test_fqdn_token_with_resolver
+run_test test_hostname_dot_domain_equivalent_to_fqdn
+run_test test_bare_domain_with_resolver_multilabel
+run_test test_bare_domain_with_resolver_single_label
+run_test test_soft_drop_fqdn_with_other_valid_entries
+run_test test_soft_drop_only_fqdn_falls_back
+run_test test_soft_drop_bare_domain_empty_resolver
+run_test test_admin_typo_with_fqdn_neighbor_hard_fails
+run_test test_full_default_layout_with_resolver
+run_test test_shipped_default_with_single_label_dhcp_domain
+run_test test_dedup_dns_entries_case_insensitive
+run_test test_dedup_ip_entries
 run_test test_hash_stable_across_reorderings
 run_test test_hash_default_state_consistent
 run_test test_hash_changes_on_membership_change

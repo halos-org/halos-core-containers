@@ -514,28 +514,55 @@ process_authelia_template() {
     local indented_key
     indented_key=$(echo "${OIDC_PRIVATE_KEY}" | awk 'NR==1 {print} NR>1 {print "          " $0}')
 
-    # Build session.cookies block — one entry per configured DNS hostname.
-    # IP entries are deliberately excluded: RFC 6265 forbids the Domain
-    # cookie attribute from being an IP literal, so browsers silently drop
-    # any Set-Cookie scoped to an IP address. ForwardAuth on IP-addressed
-    # access cannot work; IP entries remain valid as cert SANs only (raw
-    # TLS without auth, e.g., direct Cockpit on :9090 which has its own
-    # auth).
+    # Build session.cookies block — one entry per configured multi-label
+    # DNS hostname. Two exclusions:
+    #
+    # 1. IP entries: RFC 6265 forbids the Domain cookie attribute from
+    #    being an IP literal; browsers silently drop any Set-Cookie
+    #    scoped to an IP address. (Already excluded by reading from
+    #    halos_dns_hostnames, which only emits DNS entries.)
+    #
+    # 2. Single-label DNS entries (e.g., bare `halosdev`): Authelia 4.39+
+    #    rejects them at config-load time with "must have at least a
+    #    single period or be an ip address", which matches RFC 6265 §5.3
+    #    step 5 (single-label Domain attributes are ignored by user
+    #    agents anyway). Bare hostnames remain valid as cert SANs and
+    #    as Traefik path-only matchers — users accessing via bare host
+    #    just won't have an SSO session cookie scoped to that name.
     #
     # Each entry's authelia_url matches its own domain because Authelia
     # validates that the ForwardAuth redirect URL shares a cookie scope
-    # with the cookie domain (rejected otherwise). The OIDC single-
-    # canonical concern is separate: AUTH_OIDC_ISSUER and the discovery-
-    # served authorization_endpoint stay bound to the canonical hostname
-    # via Homarr's environment.
+    # with the cookie domain. The OIDC single-canonical concern is
+    # separate: AUTH_OIDC_ISSUER and the discovery-served
+    # authorization_endpoint stay bound to the canonical hostname via
+    # Homarr's environment.
     local cookies_block=""
     while IFS= read -r host; do
         [ -z "$host" ] && continue
+        # Skip single-label hostnames — Authelia rejects them as cookie domains.
+        case "$host" in
+            *.*) ;;
+            *) continue ;;
+        esac
         cookies_block+="    - domain: '${host}'"$'\n'
         cookies_block+="      authelia_url: 'https://${host}/sso'"$'\n'
         cookies_block+="      default_redirection_url: 'https://${host}'"$'\n'
     done < <(halos_dns_hostnames)
     cookies_block="${cookies_block%$'\n'}"
+    if [ -z "$cookies_block" ]; then
+        # Every DNS entry was filtered (admin-pinned single-label config or
+        # similar pathological case). An empty cookies: block in Authelia's
+        # config makes it crash-loop at startup. Synthesize a fallback entry
+        # from the always-multi-label mDNS canonical so the device boots and
+        # the operator can see the misconfiguration via working access on
+        # ${hostname}.local rather than via container logs only.
+        local _fallback_canonical
+        _fallback_canonical="$(_halos_short_hostname).local"
+        echo "WARN: hostnames.conf produced no multi-label DNS entries for Authelia cookies; falling back to ${_fallback_canonical}" >&2
+        cookies_block+="    - domain: '${_fallback_canonical}'"$'\n'
+        cookies_block+="      authelia_url: 'https://${_fallback_canonical}/sso'"$'\n'
+        cookies_block+="      default_redirection_url: 'https://${_fallback_canonical}'"
+    fi
 
     # Substitute the marker first so ${HALOS_DOMAIN} inside rendered
     # cookies is caught by the global pass. Single-shot bash replacement

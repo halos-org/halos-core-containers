@@ -25,16 +25,27 @@ See [docs/SSO_SPEC.md](docs/SSO_SPEC.md) and [docs/SSO_ARCHITECTURE.md](docs/SSO
 
 ## Multi-Hostname Configuration
 
-By default, HaLOS only answers to its `${hostname}.local` mDNS name. To make
-the device reachable over a VPN, an admin-configured DNS alias, or a raw IP,
-add additional entries to `/etc/halos/hostnames.conf`:
+By default, HaLOS answers to two names:
+
+- `${hostname}.local` — mDNS, works on any LAN.
+- `${fqdn}` — full DHCP/admin domain (e.g., `halosdev.example.com` when
+  DHCP option 15 is set or the admin runs `hostnamectl set-hostname`).
+
+Both are listed in the shipped `/etc/halos/hostnames.conf`. To add VPN
+aliases or other multi-label DNS names, edit the file:
 
 ```
 # /etc/halos/hostnames.conf
-${hostname}.local           # canonical (first non-IP entry)
+${hostname}.local           # canonical (first entry)
+${fqdn}                     # auto-resolved DHCP/admin FQDN
 halosdev.example.com        # VPN/DNS alias
-10.0.0.50                   # raw IP, cert SAN only (no auth on IP-addressed access)
 ```
+
+Single-label hostnames and raw IPs are deliberately not in the example
+set — they cannot carry an Authelia session cookie (RFC 6265 §5.3 step
+5; Authelia 4.39+ rejects them outright), so SSO breaks on them in
+non-obvious ways. See [docs/HOSTNAMES.md](docs/HOSTNAMES.md) for the
+full token reference, resolver chain, and trust-boundary notes.
 
 After editing, restart the service:
 
