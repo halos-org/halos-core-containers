@@ -514,20 +514,27 @@ process_authelia_template() {
     local indented_key
     indented_key=$(echo "${OIDC_PRIVATE_KEY}" | awk 'NR==1 {print} NR>1 {print "          " $0}')
 
-    # Build session.cookies block — one entry per configured hostname
-    # (DNS and IP). Each entry's authelia_url MUST match its own domain
-    # because Authelia validates that the ForwardAuth redirect URL shares
-    # a cookie scope with the cookie domain (rejected otherwise). OIDC
-    # single-canonical concern is separate: AUTH_OIDC_ISSUER and the
-    # discovery-served authorization_endpoint are still bound to the
-    # canonical hostname via Homarr's environment.
+    # Build session.cookies block — one entry per configured DNS hostname.
+    # IP entries are deliberately excluded: RFC 6265 forbids the Domain
+    # cookie attribute from being an IP literal, so browsers silently drop
+    # any Set-Cookie scoped to an IP address. ForwardAuth on IP-addressed
+    # access cannot work; IP entries remain valid as cert SANs only (raw
+    # TLS without auth, e.g., direct Cockpit on :9090 which has its own
+    # auth).
+    #
+    # Each entry's authelia_url matches its own domain because Authelia
+    # validates that the ForwardAuth redirect URL shares a cookie scope
+    # with the cookie domain (rejected otherwise). The OIDC single-
+    # canonical concern is separate: AUTH_OIDC_ISSUER and the discovery-
+    # served authorization_endpoint stay bound to the canonical hostname
+    # via Homarr's environment.
     local cookies_block=""
     while IFS= read -r host; do
         [ -z "$host" ] && continue
         cookies_block+="    - domain: '${host}'"$'\n'
         cookies_block+="      authelia_url: 'https://${host}/sso'"$'\n'
         cookies_block+="      default_redirection_url: 'https://${host}'"$'\n'
-    done < <(halos_all_hostnames)
+    done < <(halos_dns_hostnames)
     cookies_block="${cookies_block%$'\n'}"
 
     # Substitute the marker first so ${HALOS_DOMAIN} inside rendered

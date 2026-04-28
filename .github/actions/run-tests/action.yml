@@ -22,6 +22,17 @@ runs:
           echo "No tests found, skipping pytest"
         fi
 
+    - name: Run shell tests
+      shell: bash
+      run: |
+        # Bash test scripts are tests/test-*.sh; the ./run test task
+        # iterates them and exits non-zero on the first failure.
+        if compgen -G "tests/test-*.sh" > /dev/null; then
+          ./run test
+        else
+          echo "No shell tests found, skipping"
+        fi
+
     - name: Validate YAML syntax
       shell: bash
       run: |

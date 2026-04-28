@@ -97,8 +97,9 @@ halos-core-containers/
 hostname this device answers to (cert SANs, Authelia cookies, OIDC
 `redirect_uris`). The shared loader at
 `/usr/lib/halos-core-containers/lib-hostnames.sh` is sourced by
-`prestart.sh`, `configure-container-routing`, and `reload-oidc-clients`;
-do not duplicate parsing logic — extend the loader instead.
+`prestart.sh` and `reload-oidc-clients`; do not duplicate parsing logic —
+extend the loader instead. (`configure-container-routing` no longer needs
+hostname interpolation because all per-app routers are now path-only.)
 
 **OIDC client snippet placeholder convention.** App `prestart.sh` scripts
 that drop OIDC client snippets into `/etc/halos/oidc-clients.d/` should

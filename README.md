@@ -33,7 +33,7 @@ add additional entries to `/etc/halos/hostnames.conf`:
 # /etc/halos/hostnames.conf
 ${hostname}.local           # canonical (first non-IP entry)
 halosdev.example.com        # VPN/DNS alias
-10.0.0.50                   # raw IP, ForwardAuth-only (OIDC apps not supported on IPs)
+10.0.0.50                   # raw IP, cert SAN only (no auth on IP-addressed access)
 ```
 
 After editing, restart the service:
@@ -45,9 +45,15 @@ sudo systemctl restart halos-core-containers.service
 This drives:
 
 - **TLS cert SANs** — the self-signed cert covers every entry (DNS and IP)
-- **Authelia session cookies** — one per-hostname entry; sessions are
-  host-sticky (logging in on hostname A does not authenticate hostname B)
+- **Authelia session cookies** — one per-DNS-hostname entry; sessions are
+  host-sticky (logging in on hostname A does not authenticate hostname B).
+  IP entries are excluded: RFC 6265 forbids cookies scoped to IP literals,
+  so ForwardAuth cannot work over IP-addressed access.
 - **OIDC `redirect_uris`** — one entry per DNS hostname (IPs excluded)
+
+IP entries serve a single purpose: they appear as cert SANs so that direct
+HTTPS access to the device (e.g., Cockpit at `https://<IP>:9090/`, which
+has its own authentication) does not trigger a self-signed-cert warning.
 
 ### Canonical hostname
 
