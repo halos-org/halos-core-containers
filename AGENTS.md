@@ -95,11 +95,32 @@ halos-core-containers/
 
 `/etc/halos/hostnames.conf` is the admin-managed source of truth for every
 hostname this device answers to (cert SANs, Authelia cookies, OIDC
-`redirect_uris`). The shared loader at
-`/usr/lib/halos-core-containers/lib-hostnames.sh` is sourced by
-`prestart.sh` and `reload-oidc-clients`; do not duplicate parsing logic —
-extend the loader instead. (`configure-container-routing` no longer needs
-hostname interpolation because all per-app routers are now path-only.)
+`redirect_uris`). User-facing reference: [docs/HOSTNAMES.md](docs/HOSTNAMES.md).
+
+The shared loader at `/usr/lib/halos-core-containers/lib-hostnames.sh` is
+sourced by `prestart.sh` and `reload-oidc-clients`; do not duplicate
+parsing logic — extend the loader instead. (`configure-container-routing`
+no longer needs hostname interpolation because all per-app routers are
+now path-only.)
+
+**Loader extension points.** When adding a new consumer of the parsed
+hostname list:
+- Read `HALOS_HOSTNAMES_DNS[]` and `HALOS_HOSTNAMES_IPS[]` after calling
+  `halos_load_hostnames`. Don't reparse the file.
+- If the consumer can't accept single-label DNS entries (e.g., Authelia
+  session cookies — see RFC 6265 §5.3 step 5), filter inside the consumer,
+  not in the loader. The cookies block in `prestart.sh` is the reference
+  pattern. IP entries are similarly excluded there.
+- Diagnostics: `HALOS_HOSTNAMES_SKIP` for soft-drops (network-state),
+  `HALOS_HOSTNAMES_FALLBACK` for hard fails (admin error). Keep these
+  signatures stable — operators grep them.
+
+**Test injection seam.** `HALOS_DOMAIN_RESOLVER` names a defined shell
+function whose stdout becomes the resolved domain. Gated on `declare -F`
+so a stray environment export cannot short-circuit production resolution
+or trigger command execution. When honored, the function's output
+(including empty) is authoritative — no fall-through. Tests use this to
+pin empty-domain behavior independently of the host network.
 
 **OIDC client snippet placeholder convention.** App `prestart.sh` scripts
 that drop OIDC client snippets into `/etc/halos/oidc-clients.d/` should
