@@ -72,6 +72,10 @@ halos-core-containers/
 │       └── icon.png
 ├── tools/
 │   └── build-all.sh         # Build all packages
+├── docs/
+│   ├── HOSTNAMES.md         # operator reference for /etc/halos/hostnames.conf
+│   ├── SSO_SPEC.md, SSO_ARCHITECTURE.md
+│   └── solutions/           # documented solutions to past problems (bugs, gotchas, patterns), with YAML frontmatter for searchability; relevant when implementing or debugging in documented areas
 ├── .github/workflows/
 │   └── main.yml             # CI/CD
 └── README.md
