@@ -102,7 +102,7 @@ services:
         tag: "{{.Name}}"
 
   homarr:
-    image: ghcr.io/hatlabs/homarr:v1.59.3-halos.1
+    image: ghcr.io/hatlabs/homarr:v1.59.3-halos.2
     container_name: homarr
     init: true
     restart: unless-stopped
