@@ -79,19 +79,26 @@ fi
 
 # TLS Certificate Hierarchy
 #
-# We run a per-device CA and sign a leaf for Traefik (and, in a follow-on
-# unit, Cockpit's :9090). The CA has CA:TRUE so an operator can install it
-# in their OS trust store and have all this device's services validate —
-# something the previous self-signed leaf could never offer.
+# Per-device CA signs a leaf for Traefik (and, in a follow-on unit, Cockpit's
+# :9090). The CA has CA:TRUE so an operator can install it in their OS trust
+# store and have all this device's services validate — something the previous
+# self-signed leaf could never offer.
+#
+# Two CA-source modes, picked by halos_ca_select_active:
+#   - custom: operator dropped /etc/halos/ca/ca.{crt,key} and the pair validates
+#   - auto:   no custom present → use the auto-generated per-device CA
+# The active CA is exposed via the serving-ca.crt symlink so consumers (Traefik
+# CA-download endpoint in Unit 4) always read "whichever CA is active right now".
 #
 # Layout:
-#   ${CA_DIR}/ca.crt        auto-generated device CA (20y validity, kept across reboots)
-#   ${CA_DIR}/ca.key        auto-CA private key (mode 600)
-#   ${CERTS_DIR}/halos.crt  leaf cert signed by the CA (10y validity, multi-SAN)
-#   ${CERTS_DIR}/halos.key  leaf key
-#   ${CERTS_DIR}/.domain    sentinel: "<hostname-list-hash>:<ca-fingerprint>"
-#                           Re-sign trigger fires whenever either side changes.
-CA_DIR="${CONTAINER_DATA_ROOT}/${PACKAGE_NAME}/certs/ca"
+#   /etc/halos/ca/ca.{crt,key}            optional operator-supplied custom CA
+#   ${AUTO_CA_DIR}/ca.{crt,key}           auto-generated device CA (20y, persistent)
+#   ${AUTO_CA_DIR}/serving-ca.crt         symlink → active CA cert
+#   ${CERTS_DIR}/halos.{crt,key}          leaf signed by active CA (10y, multi-SAN)
+#   ${CERTS_DIR}/.domain                  sentinel: "<hostname-hash>:<ca-fingerprint>"
+CUSTOM_CA_DIR="/etc/halos/ca"
+AUTO_CA_DIR="${CONTAINER_DATA_ROOT}/${PACKAGE_NAME}/certs/ca"
+SERVING_CA="${AUTO_CA_DIR}/serving-ca.crt"
 CERTS_DIR="${TRAEFIK_DATA}/certs"
 CERT_FILE="${CERTS_DIR}/halos.crt"
 KEY_FILE="${CERTS_DIR}/halos.key"
@@ -99,20 +106,22 @@ DOMAIN_FILE="${CERTS_DIR}/.domain"
 
 mkdir -p "${CERTS_DIR}"
 
-# Ensure the device CA exists and is healthy. First boot: generate. Subsequent
-# boots: validated and rotated if expired/implausibly-aged (self-heals after
-# a dead-RTC first boot once NTP recovers). Partial deletion (only one of
-# ca.crt/ca.key) is treated as caller error and fails loud — full regen
-# requires the operator to delete both files.
-halos_ca_ensure_auto "${CA_DIR}"
+# Select the active CA. Custom (when present + valid) wins; otherwise auto is
+# ensured/rotated as needed. Failure on a broken custom CA aborts prestart
+# rather than silently falling back — operators who can install a custom CA
+# can SSH to diagnose, and silent fallback would orphan their installed trust
+# anchor.
+halos_ca_select_active "${CUSTOM_CA_DIR}" "${AUTO_CA_DIR}" "${SERVING_CA}"
 
-CA_CRT="${CA_DIR}/ca.crt"
-CA_KEY="${CA_DIR}/ca.key"
+CA_CRT="${HALOS_CA_ACTIVE_CRT}"
+CA_KEY="${HALOS_CA_ACTIVE_KEY}"
+echo "Active CA: ${CA_CRT} (mode=${HALOS_CA_ACTIVE_MODE})"
+
 # Explicit `|| exit` because bash `set -e` does NOT abort on a command-
 # substitution failure inside an assignment. Without this guard, a corrupt CA
 # would silently produce CA_FINGERPRINT="" and feed a malformed sentinel into
 # downstream comparison, causing an indefinite re-sign loop. halos_ca_fingerprint
-# now returns non-zero and emits nothing on stdout when openssl can't parse the
+# returns non-zero and emits nothing on stdout when openssl can't parse the
 # cert, so this guard is the load-bearing piece.
 CA_FINGERPRINT=$(halos_ca_fingerprint "${CA_CRT}") || {
     echo "prestart: failed to compute CA fingerprint; cert generation cannot continue" >&2
