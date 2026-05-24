@@ -252,6 +252,165 @@ test_sign_leaf_does_not_verify_against_other_ca() {
     fi
 }
 
+test_sentinel_compose_format() {
+    local out
+    out=$(halos_ca_sentinel_compose "aaaa" "bbbb")
+    assert_eq "$out" "aaaa:bbbb" "compose should join with single colon" || return 1
+}
+
+test_sentinel_classify_match_shape() {
+    local s
+    s=$(printf '%064d:%064d' 0 0 | tr 0 a)
+    local got; got=$(halos_ca_sentinel_classify "$s")
+    assert_eq "$got" "match-shape" "64hex:64hex must classify as match-shape" || return 1
+}
+
+test_sentinel_classify_legacy() {
+    local s; s=$(printf '%064d' 0 | tr 0 a)
+    local got; got=$(halos_ca_sentinel_classify "$s")
+    assert_eq "$got" "legacy" "64hex must classify as legacy" || return 1
+}
+
+test_sentinel_classify_unrecognized() {
+    local got
+    got=$(halos_ca_sentinel_classify "")
+    assert_eq "$got" "unrecognized" "empty must classify as unrecognized" || return 1
+    got=$(halos_ca_sentinel_classify "garbage")
+    assert_eq "$got" "unrecognized" "non-hex must classify as unrecognized" || return 1
+    got=$(halos_ca_sentinel_classify "aaaa:bbbb")
+    assert_eq "$got" "unrecognized" "short hex must classify as unrecognized" || return 1
+    # Trailing whitespace / newline
+    local s; s=$(printf '%064d' 0 | tr 0 a)
+    got=$(halos_ca_sentinel_classify "${s}
+")
+    assert_eq "$got" "unrecognized" "trailing newline must classify as unrecognized" || return 1
+}
+
+test_fingerprint_corrupt_cert_errors() {
+    # Regression guard: prior version returned 0 with empty stdout when openssl
+    # couldn't parse the cert, which cascaded into a re-sign loop in prestart.
+    local d="$TMPDIR_ROOT/case_fp_corrupt"
+    mkdir -p "$d"
+    printf 'not a certificate\n' > "$d/ca.crt"
+    halos_ca_fingerprint "$d/ca.crt" >/dev/null 2>&1
+    local rc=$?
+    assert_eq "$rc" "1" "corrupt cert must exit 1, not silently return empty" || return 1
+}
+
+test_ensure_auto_refuses_partial_state() {
+    # Only ca.crt present (no ca.key). Function must refuse and exit 1 rather
+    # than silently regenerate and orphan a previously-distributed trust anchor.
+    local d="$TMPDIR_ROOT/case_partial_crt_only"
+    mkdir -p "$d"
+    halos_ca_ensure_auto "$d" || return 1
+    local fp_before; fp_before=$(halos_ca_fingerprint "$d/ca.crt")
+    rm -f "$d/ca.key"
+    halos_ca_ensure_auto "$d" >/dev/null 2>&1
+    local rc=$?
+    assert_eq "$rc" "1" "partial state (key missing) must exit 1" || return 1
+    # CA cert must not have been regenerated (same fingerprint)
+    local fp_after; fp_after=$(halos_ca_fingerprint "$d/ca.crt" 2>/dev/null) || true
+    assert_eq "$fp_after" "$fp_before" "ca.crt must not have been overwritten" || return 1
+}
+
+test_ensure_auto_refuses_partial_state_key_only() {
+    local d="$TMPDIR_ROOT/case_partial_key_only"
+    mkdir -p "$d"
+    halos_ca_ensure_auto "$d" || return 1
+    rm -f "$d/ca.crt"
+    halos_ca_ensure_auto "$d" >/dev/null 2>&1
+    local rc=$?
+    assert_eq "$rc" "1" "partial state (crt missing) must exit 1" || return 1
+    # ca.key should still be the original (no regeneration)
+    [ -f "$d/ca.key" ] || { echo "ca.key should still exist"; return 1; }
+}
+
+test_ensure_auto_rotates_expired_ca() {
+    # A CA whose notAfter is too close (or in the past) must trigger rotation
+    # so a device that booted with a wildly-skewed clock self-heals when NTP
+    # catches up. Synthesize an expired CA by overwriting ca.crt with one that
+    # already expired, then re-invoking ensure_auto.
+    local d="$TMPDIR_ROOT/case_expired"
+    mkdir -p "$d"
+    halos_ca_ensure_auto "$d" || return 1
+    local fp_before; fp_before=$(halos_ca_fingerprint "$d/ca.crt")
+    # Overwrite ca.crt with a cert that expired yesterday (fresh keypair just
+    # for the test fixture). Reuse the existing ca.key so this matches the
+    # "both files present but cert is unhealthy" code path.
+    local nb na
+    nb=$(date -u -d "@$(( $(date -u +%s) - 7200 ))" +%Y%m%d%H%M%SZ 2>/dev/null \
+        || date -u -r "$(( $(date -u +%s) - 7200 ))" +%Y%m%d%H%M%SZ)
+    na=$(date -u -d "@$(( $(date -u +%s) - 3600 ))" +%Y%m%d%H%M%SZ 2>/dev/null \
+        || date -u -r "$(( $(date -u +%s) - 3600 ))" +%Y%m%d%H%M%SZ)
+    openssl req -x509 -nodes -newkey rsa:2048 \
+        -keyout "$d/throwaway.key" -out "$d/ca.crt" \
+        -not_before "$nb" -not_after "$na" \
+        -subj "/CN=expired" >/dev/null 2>&1 \
+        || { echo "fixture cert generation failed"; return 1; }
+    rm -f "$d/throwaway.key"
+
+    halos_ca_ensure_auto "$d" 2>/dev/null || { echo "ensure_auto should rotate, not fail"; return 1; }
+    local fp_after; fp_after=$(halos_ca_fingerprint "$d/ca.crt")
+    if [ "$fp_before" = "$fp_after" ]; then
+        echo "expired CA was not rotated"
+        return 1
+    fi
+    # And the new CA must itself be healthy
+    halos_ca_ensure_auto "$d" || { echo "rotated CA should be considered healthy on next call"; return 1; }
+}
+
+test_ensure_auto_dir_mode_is_0700() {
+    local d="$TMPDIR_ROOT/case_dir_mode"
+    halos_ca_ensure_auto "$d" || return 1
+    local mode; mode=$(_stat_mode "$d")
+    assert_eq "$mode" "700" "CA directory must be mode 0700" || return 1
+}
+
+test_sign_leaf_no_srl_sidecar() {
+    # Regression guard: switched from -CAcreateserial to random -set_serial to
+    # eliminate the .srl sidecar (which has no recovery path if corrupted).
+    local d="$TMPDIR_ROOT/case_no_srl"
+    mkdir -p "$d"
+    halos_ca_ensure_auto "$d" || return 1
+    halos_ca_sign_leaf \
+        "$d/ca.crt" "$d/ca.key" \
+        "$d/leaf.crt" "$d/leaf.key" \
+        "DNS:device.local" "device.local" \
+        || return 1
+    [ ! -f "$d/ca.crt.srl" ] || { echo ".srl sidecar should not be created"; return 1; }
+    [ ! -f "$d/ca.srl" ] || { echo ".srl sidecar should not be created"; return 1; }
+}
+
+test_sign_leaf_preserves_existing_on_failure() {
+    # If signing fails after a previous leaf already exists, the existing leaf
+    # and key must remain untouched and no .new debris should be left.
+    local d="$TMPDIR_ROOT/case_sign_preserve"
+    mkdir -p "$d"
+    halos_ca_ensure_auto "$d" || return 1
+    halos_ca_sign_leaf \
+        "$d/ca.crt" "$d/ca.key" \
+        "$d/leaf.crt" "$d/leaf.key" \
+        "DNS:device.local" "device.local" \
+        || return 1
+    local fp_before; fp_before=$(openssl x509 -in "$d/leaf.crt" -noout -fingerprint -sha256)
+    # Now corrupt the CA key to force a sign failure.
+    cp "$d/ca.key" "$d/ca.key.bak"
+    printf 'not a key\n' > "$d/ca.key"
+    halos_ca_sign_leaf \
+        "$d/ca.crt" "$d/ca.key" \
+        "$d/leaf.crt" "$d/leaf.key" \
+        "DNS:device.local" "device.local" \
+        >/dev/null 2>&1
+    local rc=$?
+    # Restore key for any later assertion
+    mv "$d/ca.key.bak" "$d/ca.key"
+    [ "$rc" -ne 0 ] || { echo "sign with corrupt CA key should fail"; return 1; }
+    [ ! -f "$d/leaf.crt.new" ] || { echo "leaf.crt.new leaked"; return 1; }
+    [ ! -f "$d/leaf.key.new" ] || { echo "leaf.key.new leaked"; return 1; }
+    local fp_after; fp_after=$(openssl x509 -in "$d/leaf.crt" -noout -fingerprint -sha256)
+    assert_eq "$fp_after" "$fp_before" "existing leaf must be preserved on sign failure" || return 1
+}
+
 # ---------------------------------------------------------------------------
 
 run_test test_ensure_auto_generates_files
@@ -267,6 +426,17 @@ run_test test_sign_leaf_has_server_auth_eku
 run_test test_sign_leaf_missing_args_errors
 run_test test_sign_leaf_missing_ca_files_errors
 run_test test_sign_leaf_does_not_verify_against_other_ca
+run_test test_sentinel_compose_format
+run_test test_sentinel_classify_match_shape
+run_test test_sentinel_classify_legacy
+run_test test_sentinel_classify_unrecognized
+run_test test_fingerprint_corrupt_cert_errors
+run_test test_ensure_auto_refuses_partial_state
+run_test test_ensure_auto_refuses_partial_state_key_only
+run_test test_ensure_auto_rotates_expired_ca
+run_test test_ensure_auto_dir_mode_is_0700
+run_test test_sign_leaf_no_srl_sidecar
+run_test test_sign_leaf_preserves_existing_on_failure
 
 echo
 echo "Passed: $PASSES, Failed: $FAILS"
