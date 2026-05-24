@@ -42,9 +42,11 @@ override_dh_auto_install:
 	install -D -m 755 assets/reload-oidc-clients \
 		debian/$(PKG_NAME)/usr/bin/reload-oidc-clients
 
-	# Install shared shell library to /usr/lib/<pkg>/
+	# Install shared shell libraries to /usr/lib/<pkg>/
 	install -D -m 644 assets/lib-hostnames.sh \
 		debian/$(PKG_NAME)/usr/lib/$(PKG_NAME)/lib-hostnames.sh
+	install -D -m 644 assets/lib-ca.sh \
+		debian/$(PKG_NAME)/usr/lib/$(PKG_NAME)/lib-ca.sh
 
 	# Install hostnames.conf as a Debian conffile (admin-managed; preserved on upgrade)
 	install -D -m 640 assets/hostnames.conf \

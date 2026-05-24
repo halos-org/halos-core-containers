@@ -34,6 +34,16 @@ fi
 . "$LIB_HOSTNAMES"
 halos_load_hostnames
 
+# Load CA helpers — generates and signs leaf with a device-level CA so
+# operators can install one trust anchor (vs the previous self-signed leaf
+# that browser trust stores reject as a root).
+LIB_CA="/usr/lib/halos-core-containers/lib-ca.sh"
+if [ ! -f "$LIB_CA" ]; then
+    LIB_CA="${SCRIPT_DIR}/assets/lib-ca.sh"
+fi
+# shellcheck source=assets/lib-ca.sh
+. "$LIB_CA"
+
 HOSTNAME_SHORT=$(hostname -s 2>/dev/null || hostname | cut -d. -f1)
 HALOS_DOMAIN="$(halos_canonical_hostname)"
 
@@ -67,7 +77,21 @@ if [ ! -f "${ACME_FILE}" ]; then
     echo "Created acme.json"
 fi
 
-# Self-Signed TLS Certificate Generation
+# TLS Certificate Hierarchy
+#
+# We run a per-device CA and sign a leaf for Traefik (and, in a follow-on
+# unit, Cockpit's :9090). The CA has CA:TRUE so an operator can install it
+# in their OS trust store and have all this device's services validate —
+# something the previous self-signed leaf could never offer.
+#
+# Layout:
+#   ${CA_DIR}/ca.crt        auto-generated device CA (20y validity, kept across reboots)
+#   ${CA_DIR}/ca.key        auto-CA private key (mode 600)
+#   ${CERTS_DIR}/halos.crt  leaf cert signed by the CA (10y validity, multi-SAN)
+#   ${CERTS_DIR}/halos.key  leaf key
+#   ${CERTS_DIR}/.domain    sentinel: "<hostname-list-hash>:<ca-fingerprint>"
+#                           Re-sign trigger fires whenever either side changes.
+CA_DIR="${CONTAINER_DATA_ROOT}/${PACKAGE_NAME}/certs/ca"
 CERTS_DIR="${TRAEFIK_DATA}/certs"
 CERT_FILE="${CERTS_DIR}/halos.crt"
 KEY_FILE="${CERTS_DIR}/halos.key"
@@ -75,34 +99,43 @@ DOMAIN_FILE="${CERTS_DIR}/.domain"
 
 mkdir -p "${CERTS_DIR}"
 
-# Check if certificate needs to be (re)generated.
-# Change-detection: SHA256 hash of the sorted hostname list, stored in
-# ${DOMAIN_FILE}. Three-state read:
-#   - file absent          → regenerate
-#   - exactly 64 hex chars → compare as hash
-#   - anything else        → legacy hostname string from older versions; regenerate once
+# Ensure the device CA exists. First boot: generate. Subsequent boots:
+# leave alone (deleting ca.{crt,key} is the operator's "regenerate the CA"
+# escape hatch, per the design's manual-regen contract).
+halos_ca_ensure_auto "${CA_DIR}"
+
+CA_CRT="${CA_DIR}/ca.crt"
+CA_KEY="${CA_DIR}/ca.key"
+CA_FINGERPRINT="$(halos_ca_fingerprint "${CA_CRT}")"
+
+# Change-detection sentinel: SHA256(sorted hostname list) ":" SHA256(CA cert).
+# Three-state read:
+#   - file absent                                   → regenerate
+#   - matches /^[0-9a-f]{64}:[0-9a-f]{64}$/         → compare as combined sentinel
+#   - anything else (legacy: 64 hex; or hostname)   → regenerate once (migration)
 HOSTNAMES_HASH="$(halos_hostnames_hash)"
-NEED_CERT=false
+SENTINEL="${HOSTNAMES_HASH}:${CA_FINGERPRINT}"
+NEED_LEAF=false
 if [ ! -f "${CERT_FILE}" ] || [ ! -f "${KEY_FILE}" ]; then
-    echo "Certificate files not found, generating..."
-    NEED_CERT=true
+    echo "Leaf certificate files not found, generating..."
+    NEED_LEAF=true
 elif [ -f "${DOMAIN_FILE}" ]; then
     STORED=$(cat "${DOMAIN_FILE}")
-    if [[ "${STORED}" =~ ^[0-9a-f]{64}$ ]]; then
-        if [ "${STORED}" != "${HOSTNAMES_HASH}" ]; then
-            echo "Hostname list changed, regenerating certificate..."
-            NEED_CERT=true
+    if [[ "${STORED}" =~ ^[0-9a-f]{64}:[0-9a-f]{64}$ ]]; then
+        if [ "${STORED}" != "${SENTINEL}" ]; then
+            echo "Hostname list or CA changed, re-signing leaf certificate..."
+            NEED_LEAF=true
         fi
     else
-        echo "Legacy domain sentinel detected, migrating to hostname-list hash..."
-        NEED_CERT=true
+        echo "Legacy cert sentinel detected, migrating to combined hostname+CA sentinel..."
+        NEED_LEAF=true
     fi
 else
-    echo "Domain tracking file not found, regenerating certificate..."
-    NEED_CERT=true
+    echo "Cert tracking file not found, regenerating leaf certificate..."
+    NEED_LEAF=true
 fi
 
-if [ "${NEED_CERT}" = true ]; then
+if [ "${NEED_LEAF}" = true ]; then
     # Build subjectAltName: DNS: entries followed by IP: entries, sorted
     # for deterministic output. Each value passed through the loader has
     # already been validated; we still quote at use site (defense-in-depth).
@@ -118,25 +151,16 @@ if [ "${NEED_CERT}" = true ]; then
         done < <(printf '%s\n' "${HALOS_HOSTNAMES_IPS[@]}" | LC_ALL=C sort)
     fi
 
-    echo "Generating self-signed TLS certificate (CN=${HALOS_DOMAIN}, SANs=${SAN_ENTRIES})..."
-    KEY_NEW="${KEY_FILE}.new"
-    CERT_NEW="${CERT_FILE}.new"
-    openssl req -x509 -nodes -days 3650 -newkey rsa:2048 \
-        -keyout "${KEY_NEW}" \
-        -out "${CERT_NEW}" \
-        -subj "/CN=${HALOS_DOMAIN}" \
-        -addext "subjectAltName=${SAN_ENTRIES}"
-    chmod 600 "${KEY_NEW}"
-    chmod 644 "${CERT_NEW}"
-    # Atomic swap: key first (Traefik tolerates a brief key-without-cert
-    # window better than the inverse), then cert. Traefik only reloads
-    # when tls-default.yml mtime changes (re-touched below).
-    mv "${KEY_NEW}" "${KEY_FILE}"
-    mv "${CERT_NEW}" "${CERT_FILE}"
-    printf '%s' "${HOSTNAMES_HASH}" > "${DOMAIN_FILE}"
-    echo "Certificate generated successfully"
+    echo "Signing TLS leaf certificate (CN=${HALOS_DOMAIN}, SANs=${SAN_ENTRIES})..."
+    # halos_ca_sign_leaf handles atomic key-then-cert swap internally.
+    halos_ca_sign_leaf \
+        "${CA_CRT}" "${CA_KEY}" \
+        "${CERT_FILE}" "${KEY_FILE}" \
+        "${SAN_ENTRIES}" "${HALOS_DOMAIN}"
+    printf '%s' "${SENTINEL}" > "${DOMAIN_FILE}"
+    echo "Leaf certificate signed successfully"
 else
-    echo "Using existing certificate for ${HALOS_DOMAIN}"
+    echo "Using existing leaf certificate for ${HALOS_DOMAIN}"
 fi
 
 # Dynamic Configuration Directory
