@@ -476,6 +476,68 @@ test_validate_pair_rejects_corrupt_key() {
     assert_eq "$rc" "1" "corrupt key must not validate" || return 1
 }
 
+test_validate_pair_rejects_leaf_with_ca_substrings_in_dn() {
+    # Regression for the substring-grep injection: a CA:FALSE leaf whose
+    # Subject DN contains both "CA:TRUE" and "Certificate Sign" literals
+    # must still be rejected. Pre-fix, halos_ca_validate_pair grepped the
+    # full `openssl x509 -text` dump (which includes Subject/Issuer DNs)
+    # and accepted this kind of cert as a CA. Post-fix, the function scopes
+    # the match to the basicConstraints / keyUsage extensions via
+    # `openssl x509 -ext`, so DN contents can't satisfy the gate.
+    local d="$TMPDIR_ROOT/case_validate_dn_injection"
+    mkdir -p "$d"
+    openssl req -x509 -nodes -newkey rsa:2048 -days 7300 \
+        -keyout "$d/ca.key" -out "$d/ca.crt" \
+        -subj "/CN=Evil Cert/O=CA:TRUE Inc, Certificate Sign Co" \
+        -addext "basicConstraints=critical,CA:FALSE" \
+        -addext "keyUsage=critical,digitalSignature,keyEncipherment" \
+        >/dev/null 2>&1 \
+        || { echo "fixture cert generation failed"; return 1; }
+    halos_ca_validate_pair "$d/ca.crt" "$d/ca.key" >/dev/null 2>&1
+    local rc=$?
+    assert_eq "$rc" "1" "leaf with CA-shaped DN substrings must be rejected" || return 1
+}
+
+test_validate_pair_warns_on_short_remaining() {
+    # Cert with remaining validity in the warn window (below WARN, above MIN)
+    # must pass validation BUT log a WARNING to stderr. Lets operators see
+    # the impending cliff in journalctl long before the hard floor fires.
+    local d="$TMPDIR_ROOT/case_validate_warn_window"
+    mkdir -p "$d"
+    # 60 days is below the 90d WARN window but above the 30d MIN floor.
+    openssl req -x509 -nodes -newkey rsa:2048 -days 60 \
+        -keyout "$d/ca.key" -out "$d/ca.crt" \
+        -subj "/CN=Aging CA" \
+        -addext "basicConstraints=critical,CA:TRUE,pathlen:0" \
+        -addext "keyUsage=critical,keyCertSign,cRLSign" \
+        >/dev/null 2>&1 \
+        || { echo "fixture cert generation failed"; return 1; }
+    local stderr_capture
+    stderr_capture=$(halos_ca_validate_pair "$d/ca.crt" "$d/ca.key" 2>&1)
+    local rc=$?
+    assert_eq "$rc" "0" "CA in warn window must still pass validation" || return 1
+    if ! printf '%s' "$stderr_capture" | grep -q 'WARNING'; then
+        echo "expected WARNING on stderr; got: $stderr_capture"
+        return 1
+    fi
+}
+
+test_validate_pair_no_warn_with_ample_remaining() {
+    # Cert with > WARN days remaining must pass without any WARNING line —
+    # confirms the warn path is gated on the threshold, not always-on.
+    local d="$TMPDIR_ROOT/case_validate_no_warn"
+    mkdir -p "$d"
+    halos_ca_ensure_auto "$d" || return 1
+    local stderr_capture
+    stderr_capture=$(halos_ca_validate_pair "$d/ca.crt" "$d/ca.key" 2>&1)
+    local rc=$?
+    assert_eq "$rc" "0" "ample-validity CA must pass validation" || return 1
+    if printf '%s' "$stderr_capture" | grep -q 'WARNING'; then
+        echo "did not expect WARNING for 20-year CA; got: $stderr_capture"
+        return 1
+    fi
+}
+
 test_validate_pair_rejects_ca_without_keycertsign() {
     # A cert with basicConstraints CA:TRUE but keyUsage missing keyCertSign
     # must not validate — exercises the keyCertSign gate in isolation.
@@ -494,13 +556,13 @@ test_validate_pair_rejects_ca_without_keycertsign() {
 }
 
 test_validate_pair_rejects_short_lived_ca() {
-    # Operator-supplied CA with < HALOS_CA_MIN_REMAINING_DAYS remaining must
-    # fail validation. Boundary test for the expiry-cliff behaviour that
-    # devices will hit if an operator forgets to rotate before threshold.
+    # Operator-supplied CA with remaining validity below the hard floor
+    # (HALOS_CA_CUSTOM_MIN_DAYS) must fail validation. The 5-day fixture
+    # below puts the cert clearly under the 30-day floor regardless of
+    # second-level openssl rounding.
     local d="$TMPDIR_ROOT/case_validate_short_lived"
     mkdir -p "$d"
-    # Validity = 30 days (well below the 365-day floor).
-    openssl req -x509 -nodes -newkey rsa:2048 -days 30 \
+    openssl req -x509 -nodes -newkey rsa:2048 -days 5 \
         -keyout "$d/ca.key" -out "$d/ca.crt" \
         -subj "/CN=Short-lived CA" \
         -addext "basicConstraints=critical,CA:TRUE,pathlen:0" \
@@ -509,7 +571,23 @@ test_validate_pair_rejects_short_lived_ca() {
         || { echo "fixture cert generation failed"; return 1; }
     halos_ca_validate_pair "$d/ca.crt" "$d/ca.key" >/dev/null 2>&1
     local rc=$?
-    assert_eq "$rc" "1" "CA with <365d remaining must fail validation" || return 1
+    assert_eq "$rc" "1" "CA below the hard-floor remaining-days must fail validation" || return 1
+}
+
+test_select_active_retightens_custom_dir_mode() {
+    # Defense-in-depth: an operator who widens the custom-CA drop slot
+    # (e.g., debugging) must have it re-tightened to 0700 on the next
+    # prestart, so the private key isn't left world-traversable.
+    local custom="$TMPDIR_ROOT/case_select_chmod"
+    local auto="$TMPDIR_ROOT/case_select_chmod_auto"
+    local link="$auto/serving-ca.crt"
+    halos_ca_ensure_auto "$custom" || return 1
+    chmod 0755 "$custom"
+    local mode_before; mode_before=$(_stat_mode "$custom")
+    assert_eq "$mode_before" "755" "fixture: pre-call mode should be 755" || return 1
+    halos_ca_select_active "$custom" "$auto" "$link" || return 1
+    local mode_after; mode_after=$(_stat_mode "$custom")
+    assert_eq "$mode_after" "700" "custom CA dir mode must be re-tightened to 700" || return 1
 }
 
 test_select_active_partial_custom_key_only_fails_loud() {
@@ -669,8 +747,12 @@ run_test test_validate_pair_rejects_non_ca_cert
 run_test test_validate_pair_rejects_mismatched_key
 run_test test_validate_pair_rejects_corrupt_cert
 run_test test_validate_pair_rejects_corrupt_key
+run_test test_validate_pair_rejects_leaf_with_ca_substrings_in_dn
+run_test test_validate_pair_warns_on_short_remaining
+run_test test_validate_pair_no_warn_with_ample_remaining
 run_test test_validate_pair_rejects_ca_without_keycertsign
 run_test test_validate_pair_rejects_short_lived_ca
+run_test test_select_active_retightens_custom_dir_mode
 run_test test_select_active_partial_custom_key_only_fails_loud
 run_test test_select_active_no_custom_uses_auto
 run_test test_select_active_valid_custom_takes_precedence

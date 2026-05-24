@@ -32,10 +32,22 @@ HALOS_CA_DAYS=7300            # 20 years
 HALOS_CA_LEAF_DAYS=3650       # 10 years
 HALOS_CA_BACKDATE_HOURS=24
 HALOS_CA_SUBJECT="/CN=HaLOS Device CA"
-# Minimum remaining lifetime before halos_ca_ensure_auto treats the CA as
-# expired-or-implausible and rotates: 365 days. Far below the 20y validity, so
-# the only realistic trigger is clock skew / corruption.
-HALOS_CA_MIN_REMAINING_DAYS=365
+
+# Auto-CA rotation trigger: rotate the device-generated CA when its remaining
+# validity drops below this many days. Set well below the 20y validity, so
+# the realistic trigger is clock skew / corruption — not natural aging.
+HALOS_CA_AUTO_ROTATE_DAYS=365
+
+# Custom (operator-supplied) CA acceptance thresholds:
+#   - hard floor: refuse to use a custom CA with less than this many days
+#     remaining. Lower than the auto-rotate threshold because operators
+#     deliberately choose short-lived intermediates in some deployments
+#     and we don't want to refuse a valid 6-month CA out of the box.
+#   - warn window: emit a loud WARNING in prestart logs when remaining
+#     validity is below this, even if still above the hard floor. Gives
+#     operators a documented runway to rotate before the hard cliff.
+HALOS_CA_CUSTOM_MIN_DAYS=30
+HALOS_CA_CUSTOM_WARN_DAYS=90
 
 # Internal -------------------------------------------------------------------
 
@@ -103,15 +115,17 @@ halos_ca_fingerprint() {
     printf '%s' "$fp"
 }
 
-# _halos_ca_is_healthy <crt_path>
-# Returns 0 if the cert parses, hasn't expired, and has at least
-# HALOS_CA_MIN_REMAINING_DAYS of validity left. Returns 1 otherwise.
-# Used by halos_ca_ensure_auto to detect clock-skew-baked or corrupted CAs.
+# _halos_ca_is_healthy <crt_path> [min_days]
+# Returns 0 if the cert parses, hasn't expired, and has at least <min_days>
+# of validity left. <min_days> defaults to HALOS_CA_AUTO_ROTATE_DAYS for
+# backwards compatibility with the auto-CA rotation call site; consumers
+# checking custom-CA acceptance pass HALOS_CA_CUSTOM_MIN_DAYS explicitly.
 _halos_ca_is_healthy() {
     local crt="$1"
+    local min_days="${2:-$HALOS_CA_AUTO_ROTATE_DAYS}"
     [ -f "$crt" ] || return 1
     # -checkend N: returns 0 if cert expires more than N seconds in the future.
-    local horizon=$((HALOS_CA_MIN_REMAINING_DAYS * 86400))
+    local horizon=$((min_days * 86400))
     openssl x509 -in "$crt" -noout -checkend "$horizon" >/dev/null 2>&1
 }
 
@@ -204,24 +218,32 @@ halos_ca_validate_pair() {
     [ -f "$crt" ] || { echo "halos_ca_validate_pair: cert missing: $crt" >&2; return 1; }
     [ -f "$key" ] || { echo "halos_ca_validate_pair: key missing: $key" >&2; return 1; }
 
-    local crt_text
-    if ! crt_text=$(openssl x509 -in "$crt" -noout -text 2>/dev/null); then
+    # Parse check — discards output, just confirms the cert is well-formed.
+    if ! openssl x509 -in "$crt" -noout 2>/dev/null; then
         echo "halos_ca_validate_pair: cert at $crt does not parse" >&2
         return 1
     fi
-    # CA:TRUE marker only appears in basicConstraints; safe substring check.
-    if ! printf '%s' "$crt_text" | grep -q 'CA:TRUE'; then
+    # Scoped extension checks. `-ext <name>` emits ONLY the named extension's
+    # body, not the full -text dump, so the grep can't false-positive on a
+    # Subject/Issuer DN that happens to contain "CA:TRUE" or "Certificate Sign".
+    # Requires OpenSSL 1.1.1+ (well below the Debian trixie baseline of 3.5).
+    if ! openssl x509 -in "$crt" -noout -ext basicConstraints 2>/dev/null | grep -q 'CA:TRUE'; then
         echo "halos_ca_validate_pair: cert at $crt lacks basicConstraints CA:TRUE" >&2
         return 1
     fi
-    # "Certificate Sign" is openssl's human-readable name for keyCertSign.
-    if ! printf '%s' "$crt_text" | grep -q 'Certificate Sign'; then
+    if ! openssl x509 -in "$crt" -noout -ext keyUsage 2>/dev/null | grep -q 'Certificate Sign'; then
         echo "halos_ca_validate_pair: cert at $crt lacks keyUsage keyCertSign" >&2
         return 1
     fi
-    if ! _halos_ca_is_healthy "$crt"; then
-        echo "halos_ca_validate_pair: cert at $crt is expired or has under ${HALOS_CA_MIN_REMAINING_DAYS}d remaining validity" >&2
+    # Hard floor: refuse certs below the custom-CA minimum remaining validity.
+    if ! _halos_ca_is_healthy "$crt" "$HALOS_CA_CUSTOM_MIN_DAYS"; then
+        echo "halos_ca_validate_pair: cert at $crt is expired or has under ${HALOS_CA_CUSTOM_MIN_DAYS}d remaining validity (hard floor for custom CAs)" >&2
         return 1
+    fi
+    # Soft warning: log but pass validation if remaining is below the warn
+    # window. Gives operators a documented runway to rotate before the cliff.
+    if ! _halos_ca_is_healthy "$crt" "$HALOS_CA_CUSTOM_WARN_DAYS"; then
+        echo "halos_ca_validate_pair: WARNING: cert at $crt has under ${HALOS_CA_CUSTOM_WARN_DAYS}d remaining validity; rotate before it falls below the ${HALOS_CA_CUSTOM_MIN_DAYS}d hard floor" >&2
     fi
     if ! openssl pkey -in "$key" -noout 2>/dev/null; then
         echo "halos_ca_validate_pair: key at $key does not parse as a private key" >&2
@@ -270,37 +292,64 @@ halos_ca_select_active() {
     [ -f "$custom_crt" ] && crt_present=1
     [ -f "$custom_key" ] && key_present=1
 
-    # shellcheck disable=SC2034
-    # HALOS_CA_ACTIVE_{CRT,KEY,MODE} are read by callers (prestart.sh) — match
-    # the lib-hostnames.sh convention of exposing parsed state via globals.
+    # Decide active CA into LOCAL vars first; only promote to HALOS_CA_ACTIVE_*
+    # globals after the symlink update succeeds. Keeps the invariant "globals
+    # set ⇒ on-disk symlink agrees" — a failed ln/mv leaves both unchanged.
+    local active_crt active_key active_mode
     if [ "$crt_present" -eq 1 ] || [ "$key_present" -eq 1 ]; then
-        # Operator started installing a custom CA. Both files must be present
-        # AND the pair must validate; otherwise fail loud rather than fall back.
+        # Operator installed a custom CA. Both files must be present AND the
+        # pair must validate; otherwise fail loud rather than fall back.
         if [ "$crt_present" -ne 1 ] || [ "$key_present" -ne 1 ]; then
             echo "halos_ca_select_active: partial custom CA at $custom_dir (expected both ca.crt and ca.key). Refusing to fall back to auto-CA — fix or remove the partial files." >&2
             return 1
         fi
+        # Defense-in-depth: re-tighten the drop slot to 0700 on every prestart
+        # so an operator who widened it (e.g., debugging) doesn't leave the
+        # private key world-traversable indefinitely. Mirrors what
+        # halos_ca_ensure_auto does for the auto-CA directory. Tolerate
+        # failure (returns true) so a read-only dir doesn't block startup.
+        chmod 0700 "$custom_dir" 2>/dev/null || true
         if ! halos_ca_validate_pair "$custom_crt" "$custom_key"; then
             echo "halos_ca_select_active: custom CA at $custom_dir failed validation; refusing to fall back to auto-CA. Fix or remove the broken files." >&2
             return 1
         fi
-        HALOS_CA_ACTIVE_CRT="$custom_crt"
-        HALOS_CA_ACTIVE_KEY="$custom_key"
-        HALOS_CA_ACTIVE_MODE="custom"
+        active_crt="$custom_crt"
+        active_key="$custom_key"
+        active_mode="custom"
     else
         halos_ca_ensure_auto "$auto_dir" || return $?
-        HALOS_CA_ACTIVE_CRT="${auto_dir}/ca.crt"
-        HALOS_CA_ACTIVE_KEY="${auto_dir}/ca.key"
-        HALOS_CA_ACTIVE_MODE="auto"
+        active_crt="${auto_dir}/ca.crt"
+        active_key="${auto_dir}/ca.key"
+        active_mode="auto"
     fi
 
-    # Atomic symlink update. `ln -sfn`:
-    #   -s  symbolic
-    #   -f  remove existing target first
-    #   -n  treat existing dest-symlink as a regular file (don't follow into dir)
-    # The rename(2) underlying mv-replace is atomic on the same filesystem.
+    # Atomic symlink replacement on the same filesystem: create the new
+    # symlink at a sibling temp path, then rename(2) over the target. Plain
+    # `ln -sfn` is unlink(target) + symlink(target), which leaves a brief
+    # window where the target does not exist — a future consumer reading
+    # serving-ca.crt could ENOENT. mv -Tf (GNU mv: --no-target-directory)
+    # uses rename(2) for the swap. mv is GNU on Debian targets; macOS dev
+    # falls back to ln -sfn via the `||` short-circuit below since BSD mv
+    # lacks -T (the non-atomic path is acceptable for local dev/tests).
     mkdir -p "$(dirname "$symlink_path")"
-    ln -sfn "$HALOS_CA_ACTIVE_CRT" "$symlink_path"
+    local tmp_link="${symlink_path}.new"
+    ln -sfn "$active_crt" "$tmp_link" || return 1
+    if ! mv -Tf "$tmp_link" "$symlink_path" 2>/dev/null; then
+        # BSD mv (macOS) lacks -T; fall back to non-atomic update for dev/test
+        # parity. Production target is GNU mv on Debian where mv -T succeeds.
+        rm -f "$tmp_link"
+        ln -sfn "$active_crt" "$symlink_path" || return 1
+    fi
+
+    # Symlink committed — now publish to the caller via globals.
+    # HALOS_CA_ACTIVE_{CRT,KEY,MODE} are read by callers (prestart.sh) — match
+    # the lib-hostnames.sh convention of exposing parsed state via globals.
+    # shellcheck disable=SC2034
+    HALOS_CA_ACTIVE_CRT="$active_crt"
+    # shellcheck disable=SC2034
+    HALOS_CA_ACTIVE_KEY="$active_key"
+    # shellcheck disable=SC2034
+    HALOS_CA_ACTIVE_MODE="$active_mode"
 }
 
 # halos_ca_sign_leaf <ca_crt> <ca_key> <leaf_crt_out> <leaf_key_out> <san> <cn> [days]
