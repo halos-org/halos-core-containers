@@ -27,8 +27,14 @@ runs:
       run: |
         # Bash test scripts are tests/test-*.sh; the ./run test task
         # iterates them and exits non-zero on the first failure.
+        #
+        # Tests run inside a debian:trixie container to match the production
+        # runtime (lib-ca.sh uses `openssl req -not_before`, added in OpenSSL
+        # 3.2 — ubuntu-latest still ships 3.0.13 as of 2026-05). Trixie
+        # ships OpenSSL 3.5.x, same as the target HaLOS images.
         if compgen -G "tests/test-*.sh" > /dev/null; then
-          ./run test
+          docker run --rm -v "$PWD":/workspace -w /workspace debian:trixie \
+            bash -c "apt-get update -qq && apt-get install -y -qq --no-install-recommends openssl ca-certificates bash >/dev/null && ./run test"
         else
           echo "No shell tests found, skipping"
         fi
