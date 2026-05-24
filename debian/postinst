@@ -31,6 +31,13 @@ EOF
         mkdir -p /etc/halos/traefik-dynamic.d
         mkdir -p /run/halos/routing-labels
 
+        # Operator drop slot for a custom device CA. If both ca.crt and
+        # ca.key are present and valid, halos_ca_select_active uses them
+        # instead of the auto-generated CA. Empty by default; mode 0700
+        # because it will hold a private key.
+        mkdir -p /etc/halos/ca
+        chmod 0700 /etc/halos/ca
+
         # /etc/halos/hostnames.conf is shipped as a Debian conffile.
         # Enforce the intended ownership/mode in case unpack used a
         # different umask. Conffile semantics preserve admin edits.

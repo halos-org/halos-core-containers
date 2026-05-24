@@ -10,6 +10,9 @@
 #   - halos_ca_sign_leaf <ca-crt> <ca-key> <leaf-crt-out> <leaf-key-out> <san> <cn> [days]
 #   - halos_ca_sentinel_compose <hostnames_hash> <ca_fingerprint>
 #   - halos_ca_sentinel_classify <stored>      → match-shape | legacy | unrecognized
+#   - halos_ca_validate_pair <crt> <key>       validate cert/key suitable as device CA
+#   - halos_ca_select_active <custom_dir> <auto_dir> <symlink_path>
+#                                              pick custom-if-valid / else auto, update symlink
 #
 # Generated certs carry the extensions browsers + OS trust stores require:
 #   CA   — basicConstraints CA:TRUE (so importing as trust anchor actually works),
@@ -180,6 +183,127 @@ halos_ca_ensure_auto() {
     chmod 644 "$ca_crt_new"
     mv "$ca_key_new" "$ca_key"
     mv "$ca_crt_new" "$ca_crt"
+}
+
+# halos_ca_validate_pair <ca_crt> <ca_key>
+# Returns 0 if the pair is a valid, healthy CA suitable for signing leaves:
+#   - both files parse
+#   - cert has basicConstraints CA:TRUE
+#   - cert has keyUsage keyCertSign
+#   - cert is not expired and has plausible remaining lifetime
+#   - key parses as a private key
+#   - key matches cert (derived public keys agree)
+# Returns 1 otherwise with a specific diagnostic on stderr. Used to gate
+# operator-supplied custom CAs before treating them as the active CA.
+halos_ca_validate_pair() {
+    local crt="$1" key="$2"
+    if [ -z "$crt" ] || [ -z "$key" ]; then
+        echo "halos_ca_validate_pair: <crt> <key> both required" >&2
+        return 2
+    fi
+    [ -f "$crt" ] || { echo "halos_ca_validate_pair: cert missing: $crt" >&2; return 1; }
+    [ -f "$key" ] || { echo "halos_ca_validate_pair: key missing: $key" >&2; return 1; }
+
+    local crt_text
+    if ! crt_text=$(openssl x509 -in "$crt" -noout -text 2>/dev/null); then
+        echo "halos_ca_validate_pair: cert at $crt does not parse" >&2
+        return 1
+    fi
+    # CA:TRUE marker only appears in basicConstraints; safe substring check.
+    if ! printf '%s' "$crt_text" | grep -q 'CA:TRUE'; then
+        echo "halos_ca_validate_pair: cert at $crt lacks basicConstraints CA:TRUE" >&2
+        return 1
+    fi
+    # "Certificate Sign" is openssl's human-readable name for keyCertSign.
+    if ! printf '%s' "$crt_text" | grep -q 'Certificate Sign'; then
+        echo "halos_ca_validate_pair: cert at $crt lacks keyUsage keyCertSign" >&2
+        return 1
+    fi
+    if ! _halos_ca_is_healthy "$crt"; then
+        echo "halos_ca_validate_pair: cert at $crt is expired or has under ${HALOS_CA_MIN_REMAINING_DAYS}d remaining validity" >&2
+        return 1
+    fi
+    if ! openssl pkey -in "$key" -noout 2>/dev/null; then
+        echo "halos_ca_validate_pair: key at $key does not parse as a private key" >&2
+        return 1
+    fi
+    local crt_pub key_pub
+    crt_pub=$(openssl x509 -in "$crt" -noout -pubkey 2>/dev/null) \
+        || { echo "halos_ca_validate_pair: failed to extract public key from cert $crt" >&2; return 1; }
+    key_pub=$(openssl pkey -in "$key" -pubout 2>/dev/null) \
+        || { echo "halos_ca_validate_pair: failed to derive public key from $key" >&2; return 1; }
+    if [ "$crt_pub" != "$key_pub" ]; then
+        echo "halos_ca_validate_pair: key at $key does not match cert at $crt" >&2
+        return 1
+    fi
+}
+
+# halos_ca_select_active <custom_dir> <auto_dir> <symlink_path>
+# Picks the active device CA: operator-supplied custom (when present + valid)
+# wins; otherwise the auto-CA at <auto_dir> is ensured and used. Updates
+# <symlink_path> to point at the active cert (atomic via `ln -sfn`).
+#
+# Sets globals on success:
+#   HALOS_CA_ACTIVE_CRT   path to active CA cert
+#   HALOS_CA_ACTIVE_KEY   path to active CA key (matched to cert)
+#   HALOS_CA_ACTIVE_MODE  "custom" or "auto"
+#
+# Returns:
+#   0 — success
+#   1 — custom CA present but partial / invalid (operator must fix or remove;
+#       NO silent fallback to auto)
+#   non-zero — auto-CA generation failure propagated from halos_ca_ensure_auto
+#
+# The fail-loud-on-broken-custom policy is deliberate: operators capable of
+# dropping a custom CA can SSH to diagnose, and silent fallback would
+# invalidate their installed trust anchor without warning.
+halos_ca_select_active() {
+    local custom_dir="$1" auto_dir="$2" symlink_path="$3"
+    if [ -z "$custom_dir" ] || [ -z "$auto_dir" ] || [ -z "$symlink_path" ]; then
+        echo "halos_ca_select_active: <custom_dir> <auto_dir> <symlink_path> all required" >&2
+        return 2
+    fi
+
+    local custom_crt="${custom_dir}/ca.crt"
+    local custom_key="${custom_dir}/ca.key"
+    local crt_present=0 key_present=0
+    [ -f "$custom_crt" ] && crt_present=1
+    [ -f "$custom_key" ] && key_present=1
+
+    if [ "$crt_present" -eq 1 ] || [ "$key_present" -eq 1 ]; then
+        # Operator started installing a custom CA. Both files must be present
+        # AND the pair must validate; otherwise fail loud rather than fall back.
+        if [ "$crt_present" -ne 1 ] || [ "$key_present" -ne 1 ]; then
+            echo "halos_ca_select_active: partial custom CA at $custom_dir (expected both ca.crt and ca.key). Refusing to fall back to auto-CA — fix or remove the partial files." >&2
+            return 1
+        fi
+        if ! halos_ca_validate_pair "$custom_crt" "$custom_key"; then
+            echo "halos_ca_select_active: custom CA at $custom_dir failed validation; refusing to fall back to auto-CA. Fix or remove the broken files." >&2
+            return 1
+        fi
+        # shellcheck disable=SC2034  # consumed externally by prestart.sh
+        HALOS_CA_ACTIVE_CRT="$custom_crt"
+        # shellcheck disable=SC2034
+        HALOS_CA_ACTIVE_KEY="$custom_key"
+        # shellcheck disable=SC2034
+        HALOS_CA_ACTIVE_MODE="custom"
+    else
+        halos_ca_ensure_auto "$auto_dir" || return $?
+        # shellcheck disable=SC2034
+        HALOS_CA_ACTIVE_CRT="${auto_dir}/ca.crt"
+        # shellcheck disable=SC2034
+        HALOS_CA_ACTIVE_KEY="${auto_dir}/ca.key"
+        # shellcheck disable=SC2034
+        HALOS_CA_ACTIVE_MODE="auto"
+    fi
+
+    # Atomic symlink update. `ln -sfn`:
+    #   -s  symbolic
+    #   -f  remove existing target first
+    #   -n  treat existing dest-symlink as a regular file (don't follow into dir)
+    # The rename(2) underlying mv-replace is atomic on the same filesystem.
+    mkdir -p "$(dirname "$symlink_path")"
+    ln -sfn "$HALOS_CA_ACTIVE_CRT" "$symlink_path"
 }
 
 # halos_ca_sign_leaf <ca_crt> <ca_key> <leaf_crt_out> <leaf_key_out> <san> <cn> [days]

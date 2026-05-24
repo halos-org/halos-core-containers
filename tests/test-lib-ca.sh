@@ -411,6 +411,176 @@ test_sign_leaf_preserves_existing_on_failure() {
     assert_eq "$fp_after" "$fp_before" "existing leaf must be preserved on sign failure" || return 1
 }
 
+test_validate_pair_happy_path() {
+    local d="$TMPDIR_ROOT/case_validate_happy"
+    halos_ca_ensure_auto "$d" || return 1
+    halos_ca_validate_pair "$d/ca.crt" "$d/ca.key" \
+        || { echo "freshly-generated CA should validate"; return 1; }
+}
+
+test_validate_pair_missing_args() {
+    halos_ca_validate_pair "" "" >/dev/null 2>&1
+    local rc=$?
+    assert_eq "$rc" "2" "missing args must exit 2" || return 1
+}
+
+test_validate_pair_missing_files() {
+    halos_ca_validate_pair "$TMPDIR_ROOT/nope.crt" "$TMPDIR_ROOT/nope.key" >/dev/null 2>&1
+    local rc=$?
+    assert_eq "$rc" "1" "missing files must exit 1" || return 1
+}
+
+test_validate_pair_rejects_non_ca_cert() {
+    # A leaf cert (CA:FALSE) must NOT validate as a CA.
+    local d="$TMPDIR_ROOT/case_validate_leaf"
+    mkdir -p "$d"
+    halos_ca_ensure_auto "$d" || return 1
+    halos_ca_sign_leaf \
+        "$d/ca.crt" "$d/ca.key" \
+        "$d/leaf.crt" "$d/leaf.key" \
+        "DNS:device.local" "device.local" \
+        || return 1
+    halos_ca_validate_pair "$d/leaf.crt" "$d/leaf.key" >/dev/null 2>&1
+    local rc=$?
+    assert_eq "$rc" "1" "leaf cert must not validate as a CA" || return 1
+}
+
+test_validate_pair_rejects_mismatched_key() {
+    # Cert from CA-A, key from CA-B → must reject.
+    local da="$TMPDIR_ROOT/case_validate_mismatch_a"
+    local db="$TMPDIR_ROOT/case_validate_mismatch_b"
+    halos_ca_ensure_auto "$da" || return 1
+    halos_ca_ensure_auto "$db" || return 1
+    halos_ca_validate_pair "$da/ca.crt" "$db/ca.key" >/dev/null 2>&1
+    local rc=$?
+    assert_eq "$rc" "1" "mismatched key must not validate" || return 1
+}
+
+test_validate_pair_rejects_corrupt_cert() {
+    local d="$TMPDIR_ROOT/case_validate_corrupt"
+    mkdir -p "$d"
+    halos_ca_ensure_auto "$d" || return 1
+    printf 'not a cert\n' > "$d/ca.crt"
+    halos_ca_validate_pair "$d/ca.crt" "$d/ca.key" >/dev/null 2>&1
+    local rc=$?
+    assert_eq "$rc" "1" "corrupt cert must not validate" || return 1
+}
+
+test_validate_pair_rejects_corrupt_key() {
+    local d="$TMPDIR_ROOT/case_validate_corrupt_key"
+    mkdir -p "$d"
+    halos_ca_ensure_auto "$d" || return 1
+    printf 'not a key\n' > "$d/ca.key"
+    halos_ca_validate_pair "$d/ca.crt" "$d/ca.key" >/dev/null 2>&1
+    local rc=$?
+    assert_eq "$rc" "1" "corrupt key must not validate" || return 1
+}
+
+test_select_active_no_custom_uses_auto() {
+    local custom="$TMPDIR_ROOT/case_select_auto_custom"
+    local auto="$TMPDIR_ROOT/case_select_auto_auto"
+    local link="$auto/serving-ca.crt"
+    mkdir -p "$custom"
+    # custom_dir empty → must fall through to auto
+    halos_ca_select_active "$custom" "$auto" "$link" \
+        || { echo "select_active with no custom should succeed"; return 1; }
+    assert_eq "$HALOS_CA_ACTIVE_MODE" "auto" "mode should be auto" || return 1
+    assert_eq "$HALOS_CA_ACTIVE_CRT" "$auto/ca.crt" "active cert should be auto" || return 1
+    assert_eq "$HALOS_CA_ACTIVE_KEY" "$auto/ca.key" "active key should be auto" || return 1
+    [ -L "$link" ] || { echo "symlink should exist"; return 1; }
+    local target; target=$(readlink "$link")
+    assert_eq "$target" "$auto/ca.crt" "symlink should target auto cert" || return 1
+}
+
+test_select_active_valid_custom_takes_precedence() {
+    local custom="$TMPDIR_ROOT/case_select_custom"
+    local auto="$TMPDIR_ROOT/case_select_custom_auto"
+    local link="$auto/serving-ca.crt"
+    # Seed a valid custom CA by generating one via the auto helper, then moving it
+    halos_ca_ensure_auto "$custom" || return 1
+    halos_ca_select_active "$custom" "$auto" "$link" || return 1
+    assert_eq "$HALOS_CA_ACTIVE_MODE" "custom" "mode should be custom" || return 1
+    assert_eq "$HALOS_CA_ACTIVE_CRT" "$custom/ca.crt" "active cert should be custom" || return 1
+    local target; target=$(readlink "$link")
+    assert_eq "$target" "$custom/ca.crt" "symlink should target custom cert" || return 1
+    # Auto must NOT have been generated when custom won
+    [ ! -f "$auto/ca.crt" ] || { echo "auto CA should not exist when custom is active"; return 1; }
+}
+
+test_select_active_partial_custom_fails_loud() {
+    local custom="$TMPDIR_ROOT/case_select_partial"
+    local auto="$TMPDIR_ROOT/case_select_partial_auto"
+    local link="$auto/serving-ca.crt"
+    # First establish auto so symlink exists and we can verify it's untouched
+    mkdir -p "$custom"
+    halos_ca_select_active "$custom" "$auto" "$link" || return 1
+    local target_before; target_before=$(readlink "$link")
+    # Now drop a partial custom (cert only)
+    halos_ca_ensure_auto "$TMPDIR_ROOT/seed" || return 1
+    cp "$TMPDIR_ROOT/seed/ca.crt" "$custom/ca.crt"
+    halos_ca_select_active "$custom" "$auto" "$link" >/dev/null 2>&1
+    local rc=$?
+    assert_eq "$rc" "1" "partial custom CA must fail with rc=1" || return 1
+    # Symlink must not have been retargeted
+    local target_after; target_after=$(readlink "$link")
+    assert_eq "$target_after" "$target_before" "symlink must not change on validation failure" || return 1
+}
+
+test_select_active_invalid_custom_fails_loud() {
+    local custom="$TMPDIR_ROOT/case_select_invalid"
+    local auto="$TMPDIR_ROOT/case_select_invalid_auto"
+    local link="$auto/serving-ca.crt"
+    mkdir -p "$custom"
+    halos_ca_select_active "$custom" "$auto" "$link" || return 1
+    local target_before; target_before=$(readlink "$link")
+    # Drop a leaf-shaped cert (CA:FALSE) as if operator made a mistake
+    halos_ca_ensure_auto "$TMPDIR_ROOT/seed2" || return 1
+    halos_ca_sign_leaf \
+        "$TMPDIR_ROOT/seed2/ca.crt" "$TMPDIR_ROOT/seed2/ca.key" \
+        "$custom/ca.crt" "$custom/ca.key" \
+        "DNS:device.local" "device.local" \
+        || return 1
+    halos_ca_select_active "$custom" "$auto" "$link" >/dev/null 2>&1
+    local rc=$?
+    assert_eq "$rc" "1" "invalid custom CA (leaf cert) must fail with rc=1" || return 1
+    local target_after; target_after=$(readlink "$link")
+    assert_eq "$target_after" "$target_before" "symlink must not change on validation failure" || return 1
+}
+
+test_select_active_switch_custom_to_auto() {
+    local custom="$TMPDIR_ROOT/case_select_switch_custom"
+    local auto="$TMPDIR_ROOT/case_select_switch_auto"
+    local link="$auto/serving-ca.crt"
+    # Active = custom
+    halos_ca_ensure_auto "$custom" || return 1
+    halos_ca_select_active "$custom" "$auto" "$link" || return 1
+    assert_eq "$HALOS_CA_ACTIVE_MODE" "custom" "should start as custom" || return 1
+    # Remove custom → active should switch to auto
+    rm -f "$custom/ca.crt" "$custom/ca.key"
+    halos_ca_select_active "$custom" "$auto" "$link" || return 1
+    assert_eq "$HALOS_CA_ACTIVE_MODE" "auto" "should switch to auto after custom removed" || return 1
+    local target; target=$(readlink "$link")
+    assert_eq "$target" "$auto/ca.crt" "symlink should retarget to auto" || return 1
+}
+
+test_select_active_switch_auto_to_custom() {
+    local custom="$TMPDIR_ROOT/case_select_switch2_custom"
+    local auto="$TMPDIR_ROOT/case_select_switch2_auto"
+    local link="$auto/serving-ca.crt"
+    mkdir -p "$custom"
+    # Active = auto initially
+    halos_ca_select_active "$custom" "$auto" "$link" || return 1
+    assert_eq "$HALOS_CA_ACTIVE_MODE" "auto" "should start as auto" || return 1
+    # Drop a valid custom → active should switch
+    halos_ca_ensure_auto "$TMPDIR_ROOT/seed3" || return 1
+    cp "$TMPDIR_ROOT/seed3/ca.crt" "$custom/ca.crt"
+    cp "$TMPDIR_ROOT/seed3/ca.key" "$custom/ca.key"
+    halos_ca_select_active "$custom" "$auto" "$link" || return 1
+    assert_eq "$HALOS_CA_ACTIVE_MODE" "custom" "should switch to custom after drop" || return 1
+    local target; target=$(readlink "$link")
+    assert_eq "$target" "$custom/ca.crt" "symlink should retarget to custom" || return 1
+}
+
 # ---------------------------------------------------------------------------
 
 run_test test_ensure_auto_generates_files
@@ -437,6 +607,19 @@ run_test test_ensure_auto_rotates_expired_ca
 run_test test_ensure_auto_dir_mode_is_0700
 run_test test_sign_leaf_no_srl_sidecar
 run_test test_sign_leaf_preserves_existing_on_failure
+run_test test_validate_pair_happy_path
+run_test test_validate_pair_missing_args
+run_test test_validate_pair_missing_files
+run_test test_validate_pair_rejects_non_ca_cert
+run_test test_validate_pair_rejects_mismatched_key
+run_test test_validate_pair_rejects_corrupt_cert
+run_test test_validate_pair_rejects_corrupt_key
+run_test test_select_active_no_custom_uses_auto
+run_test test_select_active_valid_custom_takes_precedence
+run_test test_select_active_partial_custom_fails_loud
+run_test test_select_active_invalid_custom_fails_loud
+run_test test_select_active_switch_custom_to_auto
+run_test test_select_active_switch_auto_to_custom
 
 echo
 echo "Passed: $PASSES, Failed: $FAILS"
