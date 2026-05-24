@@ -476,6 +476,61 @@ test_validate_pair_rejects_corrupt_key() {
     assert_eq "$rc" "1" "corrupt key must not validate" || return 1
 }
 
+test_validate_pair_rejects_ca_without_keycertsign() {
+    # A cert with basicConstraints CA:TRUE but keyUsage missing keyCertSign
+    # must not validate — exercises the keyCertSign gate in isolation.
+    local d="$TMPDIR_ROOT/case_validate_no_keycertsign"
+    mkdir -p "$d"
+    openssl req -x509 -nodes -newkey rsa:2048 -days 7300 \
+        -keyout "$d/ca.key" -out "$d/ca.crt" \
+        -subj "/CN=Bad CA" \
+        -addext "basicConstraints=critical,CA:TRUE,pathlen:0" \
+        -addext "keyUsage=critical,digitalSignature,keyEncipherment" \
+        >/dev/null 2>&1 \
+        || { echo "fixture cert generation failed"; return 1; }
+    halos_ca_validate_pair "$d/ca.crt" "$d/ca.key" >/dev/null 2>&1
+    local rc=$?
+    assert_eq "$rc" "1" "CA cert without keyCertSign must fail validation" || return 1
+}
+
+test_validate_pair_rejects_short_lived_ca() {
+    # Operator-supplied CA with < HALOS_CA_MIN_REMAINING_DAYS remaining must
+    # fail validation. Boundary test for the expiry-cliff behaviour that
+    # devices will hit if an operator forgets to rotate before threshold.
+    local d="$TMPDIR_ROOT/case_validate_short_lived"
+    mkdir -p "$d"
+    # Validity = 30 days (well below the 365-day floor).
+    openssl req -x509 -nodes -newkey rsa:2048 -days 30 \
+        -keyout "$d/ca.key" -out "$d/ca.crt" \
+        -subj "/CN=Short-lived CA" \
+        -addext "basicConstraints=critical,CA:TRUE,pathlen:0" \
+        -addext "keyUsage=critical,keyCertSign,cRLSign" \
+        >/dev/null 2>&1 \
+        || { echo "fixture cert generation failed"; return 1; }
+    halos_ca_validate_pair "$d/ca.crt" "$d/ca.key" >/dev/null 2>&1
+    local rc=$?
+    assert_eq "$rc" "1" "CA with <365d remaining must fail validation" || return 1
+}
+
+test_select_active_partial_custom_key_only_fails_loud() {
+    # Symmetric to test_select_active_partial_custom_fails_loud — operator
+    # drops only ca.key (e.g., mid-copy). Must fail with rc=1 and not
+    # silently fall back to auto-CA.
+    local custom="$TMPDIR_ROOT/case_select_partial_key"
+    local auto="$TMPDIR_ROOT/case_select_partial_key_auto"
+    local link="$auto/serving-ca.crt"
+    mkdir -p "$custom"
+    halos_ca_select_active "$custom" "$auto" "$link" || return 1
+    local target_before; target_before=$(readlink "$link")
+    halos_ca_ensure_auto "$TMPDIR_ROOT/seed_key_only" || return 1
+    cp "$TMPDIR_ROOT/seed_key_only/ca.key" "$custom/ca.key"
+    halos_ca_select_active "$custom" "$auto" "$link" >/dev/null 2>&1
+    local rc=$?
+    assert_eq "$rc" "1" "partial custom CA (key only) must fail with rc=1" || return 1
+    local target_after; target_after=$(readlink "$link")
+    assert_eq "$target_after" "$target_before" "symlink must not change on validation failure" || return 1
+}
+
 test_select_active_no_custom_uses_auto() {
     local custom="$TMPDIR_ROOT/case_select_auto_custom"
     local auto="$TMPDIR_ROOT/case_select_auto_auto"
@@ -614,6 +669,9 @@ run_test test_validate_pair_rejects_non_ca_cert
 run_test test_validate_pair_rejects_mismatched_key
 run_test test_validate_pair_rejects_corrupt_cert
 run_test test_validate_pair_rejects_corrupt_key
+run_test test_validate_pair_rejects_ca_without_keycertsign
+run_test test_validate_pair_rejects_short_lived_ca
+run_test test_select_active_partial_custom_key_only_fails_loud
 run_test test_select_active_no_custom_uses_auto
 run_test test_select_active_valid_custom_takes_precedence
 run_test test_select_active_partial_custom_fails_loud

@@ -270,6 +270,9 @@ halos_ca_select_active() {
     [ -f "$custom_crt" ] && crt_present=1
     [ -f "$custom_key" ] && key_present=1
 
+    # shellcheck disable=SC2034
+    # HALOS_CA_ACTIVE_{CRT,KEY,MODE} are read by callers (prestart.sh) — match
+    # the lib-hostnames.sh convention of exposing parsed state via globals.
     if [ "$crt_present" -eq 1 ] || [ "$key_present" -eq 1 ]; then
         # Operator started installing a custom CA. Both files must be present
         # AND the pair must validate; otherwise fail loud rather than fall back.
@@ -281,19 +284,13 @@ halos_ca_select_active() {
             echo "halos_ca_select_active: custom CA at $custom_dir failed validation; refusing to fall back to auto-CA. Fix or remove the broken files." >&2
             return 1
         fi
-        # shellcheck disable=SC2034  # consumed externally by prestart.sh
         HALOS_CA_ACTIVE_CRT="$custom_crt"
-        # shellcheck disable=SC2034
         HALOS_CA_ACTIVE_KEY="$custom_key"
-        # shellcheck disable=SC2034
         HALOS_CA_ACTIVE_MODE="custom"
     else
         halos_ca_ensure_auto "$auto_dir" || return $?
-        # shellcheck disable=SC2034
         HALOS_CA_ACTIVE_CRT="${auto_dir}/ca.crt"
-        # shellcheck disable=SC2034
         HALOS_CA_ACTIVE_KEY="${auto_dir}/ca.key"
-        # shellcheck disable=SC2034
         HALOS_CA_ACTIVE_MODE="auto"
     fi
 
