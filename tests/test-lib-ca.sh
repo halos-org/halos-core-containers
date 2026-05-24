@@ -146,10 +146,9 @@ test_fingerprint_format() {
 }
 
 test_fingerprint_missing_file_errors() {
-    if halos_ca_fingerprint "$TMPDIR_ROOT/does-not-exist.crt" 2>/dev/null; then
-        echo "expected non-zero exit for missing file"
-        return 1
-    fi
+    halos_ca_fingerprint "$TMPDIR_ROOT/does-not-exist.crt" >/dev/null 2>&1
+    local rc=$?
+    assert_eq "$rc" "1" "missing cert file must exit 1 (runtime failure)" || return 1
 }
 
 test_sign_leaf_produces_valid_chain() {
@@ -207,8 +206,48 @@ test_sign_leaf_has_server_auth_eku() {
 }
 
 test_sign_leaf_missing_args_errors() {
-    if halos_ca_sign_leaf "" "" "" "" "" "" 2>/dev/null; then
-        echo "expected non-zero exit for missing args"
+    halos_ca_sign_leaf "" "" "" "" "" "" >/dev/null 2>&1
+    local rc=$?
+    assert_eq "$rc" "2" "missing args must exit 2 (caller bug), not 1 (runtime failure)" || return 1
+}
+
+test_sign_leaf_missing_ca_files_errors() {
+    # All args supplied but CA paths don't exist — distinct from arg-validation;
+    # must return 1 (runtime failure) and leave no .new debris.
+    local d="$TMPDIR_ROOT/case_sign_missing_ca"
+    mkdir -p "$d"
+    halos_ca_sign_leaf \
+        "$d/nonexistent-ca.crt" "$d/nonexistent-ca.key" \
+        "$d/leaf.crt" "$d/leaf.key" \
+        "DNS:device.local" "device.local" \
+        >/dev/null 2>&1
+    local rc=$?
+    assert_eq "$rc" "1" "missing CA files must exit 1 (runtime failure)" || return 1
+    [ ! -f "$d/leaf.crt.new" ] || { echo "leaf.crt.new leaked"; return 1; }
+    [ ! -f "$d/leaf.key.new" ] || { echo "leaf.key.new leaked"; return 1; }
+    [ ! -f "$d/leaf.crt" ] || { echo "leaf.crt should not exist"; return 1; }
+    [ ! -f "$d/leaf.key" ] || { echo "leaf.key should not exist"; return 1; }
+}
+
+test_sign_leaf_does_not_verify_against_other_ca() {
+    # Cross-CA contamination check: a leaf signed by CA-A must NOT verify
+    # against CA-B. Guards against a regression where the function would
+    # silently pick up a different CA from env/PATH.
+    local da="$TMPDIR_ROOT/case_cross_ca_a"
+    local db="$TMPDIR_ROOT/case_cross_ca_b"
+    halos_ca_ensure_auto "$da" || { echo "ensure_auto CA-A failed"; return 1; }
+    halos_ca_ensure_auto "$db" || { echo "ensure_auto CA-B failed"; return 1; }
+    halos_ca_sign_leaf \
+        "$da/ca.crt" "$da/ca.key" \
+        "$da/leaf.crt" "$da/leaf.key" \
+        "DNS:device.local" "device.local" \
+        || { echo "sign_leaf against CA-A failed"; return 1; }
+    # Sanity: leaf verifies against its own CA
+    openssl verify -CAfile "$da/ca.crt" "$da/leaf.crt" >/dev/null 2>&1 \
+        || { echo "leaf should verify against its own CA-A"; return 1; }
+    # Real check: leaf does NOT verify against the unrelated CA
+    if openssl verify -CAfile "$db/ca.crt" "$da/leaf.crt" >/dev/null 2>&1; then
+        echo "leaf signed by CA-A must not verify against CA-B"
         return 1
     fi
 }
@@ -226,6 +265,8 @@ run_test test_sign_leaf_produces_valid_chain
 run_test test_sign_leaf_includes_sans
 run_test test_sign_leaf_has_server_auth_eku
 run_test test_sign_leaf_missing_args_errors
+run_test test_sign_leaf_missing_ca_files_errors
+run_test test_sign_leaf_does_not_verify_against_other_ca
 
 echo
 echo "Passed: $PASSES, Failed: $FAILS"

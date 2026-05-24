@@ -49,6 +49,11 @@ halos_ca_ensure_auto() {
         return 2
     fi
     mkdir -p "$out_dir"
+    # Tighten directory mode regardless of whether mkdir just created it or it
+    # already existed — defense-in-depth so any other files placed alongside
+    # the CA key (e.g. .srl, future intermediate exports) are not reachable
+    # by other local UIDs.
+    chmod 700 "$out_dir"
     local ca_crt="${out_dir}/ca.crt"
     local ca_key="${out_dir}/ca.key"
 
@@ -115,14 +120,17 @@ halos_ca_sign_leaf() {
         return 1
     fi
 
+    # Compute timestamp before allocating tempfiles so a date(1) failure
+    # can't leak csr_tmp / ext_tmp under set -e.
+    local not_before
+    not_before=$(_halos_ca_not_before)
+
     local leaf_key_new="${leaf_key}.new"
     local leaf_crt_new="${leaf_crt}.new"
     local csr_tmp ext_tmp
     csr_tmp="$(mktemp)"
     ext_tmp="$(mktemp)"
-
-    local not_before rc=0
-    not_before=$(_halos_ca_not_before)
+    local rc=0
 
     if ! openssl req -nodes -newkey rsa:2048 \
             -keyout "$leaf_key_new" \

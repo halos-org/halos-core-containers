@@ -126,8 +126,11 @@ elif [ -f "${DOMAIN_FILE}" ]; then
             echo "Hostname list or CA changed, re-signing leaf certificate..."
             NEED_LEAF=true
         fi
-    else
+    elif [[ "${STORED}" =~ ^[0-9a-f]{64}$ ]]; then
         echo "Legacy cert sentinel detected, migrating to combined hostname+CA sentinel..."
+        NEED_LEAF=true
+    else
+        echo "Cert sentinel unrecognized or corrupt, regenerating leaf certificate..."
         NEED_LEAF=true
     fi
 else
