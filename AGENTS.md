@@ -27,7 +27,7 @@ Core container application definitions for HaLOS. These apps are pre-installed i
 
 **Branch Workflow:** Never push to main directly - always use feature branches and PRs.
 
-**Link issues and PRs:** Always link related GitHub issues in PR descriptions with `Closes #<issue-number>`.
+**Link issues and PRs:** Always link related GitHub issues in PR descriptions with `Closes #<issue-number>`. When a single tracking issue spans multiple PRs (umbrella issue with implementation units), use `Refs #<issue-number>` on the unit PRs and `Closes #<issue-number>` only on the final unit so the umbrella stays open until the work is genuinely complete.
 
 ## Version Management
 

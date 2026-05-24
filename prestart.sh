@@ -34,6 +34,16 @@ fi
 . "$LIB_HOSTNAMES"
 halos_load_hostnames
 
+# Load CA helpers — generates and signs leaf with a device-level CA so
+# operators can install one trust anchor (vs the previous self-signed leaf
+# that browser trust stores reject as a root).
+LIB_CA="/usr/lib/halos-core-containers/lib-ca.sh"
+if [ ! -f "$LIB_CA" ]; then
+    LIB_CA="${SCRIPT_DIR}/assets/lib-ca.sh"
+fi
+# shellcheck source=assets/lib-ca.sh
+. "$LIB_CA"
+
 HOSTNAME_SHORT=$(hostname -s 2>/dev/null || hostname | cut -d. -f1)
 HALOS_DOMAIN="$(halos_canonical_hostname)"
 
@@ -67,7 +77,21 @@ if [ ! -f "${ACME_FILE}" ]; then
     echo "Created acme.json"
 fi
 
-# Self-Signed TLS Certificate Generation
+# TLS Certificate Hierarchy
+#
+# We run a per-device CA and sign a leaf for Traefik (and, in a follow-on
+# unit, Cockpit's :9090). The CA has CA:TRUE so an operator can install it
+# in their OS trust store and have all this device's services validate —
+# something the previous self-signed leaf could never offer.
+#
+# Layout:
+#   ${CA_DIR}/ca.crt        auto-generated device CA (20y validity, kept across reboots)
+#   ${CA_DIR}/ca.key        auto-CA private key (mode 600)
+#   ${CERTS_DIR}/halos.crt  leaf cert signed by the CA (10y validity, multi-SAN)
+#   ${CERTS_DIR}/halos.key  leaf key
+#   ${CERTS_DIR}/.domain    sentinel: "<hostname-list-hash>:<ca-fingerprint>"
+#                           Re-sign trigger fires whenever either side changes.
+CA_DIR="${CONTAINER_DATA_ROOT}/${PACKAGE_NAME}/certs/ca"
 CERTS_DIR="${TRAEFIK_DATA}/certs"
 CERT_FILE="${CERTS_DIR}/halos.crt"
 KEY_FILE="${CERTS_DIR}/halos.key"
@@ -75,34 +99,66 @@ DOMAIN_FILE="${CERTS_DIR}/.domain"
 
 mkdir -p "${CERTS_DIR}"
 
-# Check if certificate needs to be (re)generated.
-# Change-detection: SHA256 hash of the sorted hostname list, stored in
-# ${DOMAIN_FILE}. Three-state read:
-#   - file absent          → regenerate
-#   - exactly 64 hex chars → compare as hash
-#   - anything else        → legacy hostname string from older versions; regenerate once
+# Ensure the device CA exists and is healthy. First boot: generate. Subsequent
+# boots: validated and rotated if expired/implausibly-aged (self-heals after
+# a dead-RTC first boot once NTP recovers). Partial deletion (only one of
+# ca.crt/ca.key) is treated as caller error and fails loud — full regen
+# requires the operator to delete both files.
+halos_ca_ensure_auto "${CA_DIR}"
+
+CA_CRT="${CA_DIR}/ca.crt"
+CA_KEY="${CA_DIR}/ca.key"
+# Explicit `|| exit` because bash `set -e` does NOT abort on a command-
+# substitution failure inside an assignment. Without this guard, a corrupt CA
+# would silently produce CA_FINGERPRINT="" and feed a malformed sentinel into
+# downstream comparison, causing an indefinite re-sign loop. halos_ca_fingerprint
+# now returns non-zero and emits nothing on stdout when openssl can't parse the
+# cert, so this guard is the load-bearing piece.
+CA_FINGERPRINT=$(halos_ca_fingerprint "${CA_CRT}") || {
+    echo "prestart: failed to compute CA fingerprint; cert generation cannot continue" >&2
+    exit 1
+}
+
+# Change-detection sentinel: SHA256(sorted hostname list) ":" SHA256(CA cert).
+# Classification is in lib-ca.sh so the three-state read is independently
+# testable. match-shape → compare; legacy → migrate; unrecognized → regen.
 HOSTNAMES_HASH="$(halos_hostnames_hash)"
-NEED_CERT=false
+SENTINEL="$(halos_ca_sentinel_compose "${HOSTNAMES_HASH}" "${CA_FINGERPRINT}")"
+NEED_LEAF=false
 if [ ! -f "${CERT_FILE}" ] || [ ! -f "${KEY_FILE}" ]; then
-    echo "Certificate files not found, generating..."
-    NEED_CERT=true
+    echo "Leaf certificate files not found, generating..."
+    NEED_LEAF=true
 elif [ -f "${DOMAIN_FILE}" ]; then
     STORED=$(cat "${DOMAIN_FILE}")
-    if [[ "${STORED}" =~ ^[0-9a-f]{64}$ ]]; then
-        if [ "${STORED}" != "${HOSTNAMES_HASH}" ]; then
-            echo "Hostname list changed, regenerating certificate..."
-            NEED_CERT=true
-        fi
-    else
-        echo "Legacy domain sentinel detected, migrating to hostname-list hash..."
-        NEED_CERT=true
-    fi
+    case "$(halos_ca_sentinel_classify "${STORED}")" in
+        match-shape)
+            if [ "${STORED}" != "${SENTINEL}" ]; then
+                echo "Hostname list or CA changed, re-signing leaf certificate..."
+                NEED_LEAF=true
+            fi
+            ;;
+        legacy)
+            echo "Legacy cert sentinel detected, migrating to combined hostname+CA sentinel..."
+            NEED_LEAF=true
+            ;;
+        unrecognized)
+            echo "Cert sentinel unrecognized or corrupt, regenerating leaf certificate..."
+            NEED_LEAF=true
+            ;;
+    esac
 else
-    echo "Domain tracking file not found, regenerating certificate..."
-    NEED_CERT=true
+    echo "Cert tracking file not found, regenerating leaf certificate..."
+    NEED_LEAF=true
 fi
 
-if [ "${NEED_CERT}" = true ]; then
+if [ "${NEED_LEAF}" = true ]; then
+    # Invalidate the sentinel BEFORE attempting to re-sign. If halos_ca_sign_leaf
+    # partially succeeds (key swapped, cert mv fails) and prestart exits, the
+    # sentinel is gone — so the next boot will detect "no sentinel" and retry
+    # rather than seeing a stale "everything matches" and silently skipping
+    # past a key/cert mismatch that would break TLS handshakes.
+    rm -f "${DOMAIN_FILE}"
+
     # Build subjectAltName: DNS: entries followed by IP: entries, sorted
     # for deterministic output. Each value passed through the loader has
     # already been validated; we still quote at use site (defense-in-depth).
@@ -118,25 +174,18 @@ if [ "${NEED_CERT}" = true ]; then
         done < <(printf '%s\n' "${HALOS_HOSTNAMES_IPS[@]}" | LC_ALL=C sort)
     fi
 
-    echo "Generating self-signed TLS certificate (CN=${HALOS_DOMAIN}, SANs=${SAN_ENTRIES})..."
-    KEY_NEW="${KEY_FILE}.new"
-    CERT_NEW="${CERT_FILE}.new"
-    openssl req -x509 -nodes -days 3650 -newkey rsa:2048 \
-        -keyout "${KEY_NEW}" \
-        -out "${CERT_NEW}" \
-        -subj "/CN=${HALOS_DOMAIN}" \
-        -addext "subjectAltName=${SAN_ENTRIES}"
-    chmod 600 "${KEY_NEW}"
-    chmod 644 "${CERT_NEW}"
-    # Atomic swap: key first (Traefik tolerates a brief key-without-cert
-    # window better than the inverse), then cert. Traefik only reloads
-    # when tls-default.yml mtime changes (re-touched below).
-    mv "${KEY_NEW}" "${KEY_FILE}"
-    mv "${CERT_NEW}" "${CERT_FILE}"
-    printf '%s' "${HOSTNAMES_HASH}" > "${DOMAIN_FILE}"
-    echo "Certificate generated successfully"
+    echo "Signing TLS leaf certificate (CN=${HALOS_DOMAIN}, SANs=${SAN_ENTRIES})..."
+    # halos_ca_sign_leaf handles atomic key-then-cert swap internally. On
+    # failure the previous leaf is left untouched and the sentinel (which
+    # we just rm'd) stays absent, forcing a retry next boot.
+    halos_ca_sign_leaf \
+        "${CA_CRT}" "${CA_KEY}" \
+        "${CERT_FILE}" "${KEY_FILE}" \
+        "${SAN_ENTRIES}" "${HALOS_DOMAIN}"
+    printf '%s' "${SENTINEL}" > "${DOMAIN_FILE}"
+    echo "Leaf certificate signed successfully"
 else
-    echo "Using existing certificate for ${HALOS_DOMAIN}"
+    echo "Using existing leaf certificate for ${HALOS_DOMAIN}"
 fi
 
 # Dynamic Configuration Directory
