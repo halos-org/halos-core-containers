@@ -13,7 +13,7 @@ cd halos
 ./run repos:clone
 ```
 
-See `halos/docs/` for development workflows and guidance.
+See the [halos workspace](https://github.com/halos-org/halos) for development workflows and guidance.
 
 ## About This Project
 
@@ -153,6 +153,6 @@ the literal hostname they hard-code.
 
 ## Related
 
-- **Parent**: [../AGENTS.md](../AGENTS.md) - Workspace documentation
+- **Workspace**: [halos](https://github.com/halos-org/halos) - Multi-repo development hub
 - **Sibling**: [halos-marine-containers](https://github.com/halos-org/halos-marine-containers) - Marine container store
 - **Tooling**: [container-packaging-tools](https://github.com/halos-org/container-packaging-tools)
