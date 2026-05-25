@@ -51,7 +51,10 @@ Individual apps in `apps/` have their own versions in `metadata.yaml`. These are
 - Stable: `v{VERSION}+{N}` (stable channel)
 - N = auto-calculated from existing git tags
 
-**CI Enforcement**: PRs that change app files in `apps/<app>/` must include a bump to the `version` field in `apps/<app>/metadata.yaml`, or CI will fail. Changes outside `apps/` that affect the package also require a VERSION file bump.
+**CI Enforcement**:
+
+- **App-level (per PR)**: PRs that change files in `apps/<app>/` must bump the `version` field in `apps/<app>/metadata.yaml`, or CI will fail.
+- **Repo-level (per release cycle)**: `VERSION` bumps are *per release cycle*, not per PR — see the workspace policy in `halos/AGENTS.md`. Default: do NOT bump `VERSION` in feature PRs; CI auto-increments the `+N` revision in tags between releases. Bump `VERSION` only when starting a new release cycle (when `VERSION` matches the latest stable tag).
 
 ## What This Repository Contains
 
