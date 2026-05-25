@@ -714,6 +714,134 @@ test_select_active_switch_auto_to_custom() {
     assert_eq "$target" "$custom/ca.crt" "symlink should retarget to custom" || return 1
 }
 
+test_cockpit_install_leaf_writes_valid_combined_pem() {
+    local d="$TMPDIR_ROOT/case_cockpit_happy"
+    mkdir -p "$d"
+    halos_ca_ensure_auto "$d" || return 1
+    halos_ca_sign_leaf \
+        "$d/ca.crt" "$d/ca.key" \
+        "$d/leaf.crt" "$d/leaf.key" \
+        "DNS:device.local" "device.local" \
+        || return 1
+    local out="$d/99-halos.cert"
+    halos_cockpit_install_leaf "$d/leaf.crt" "$d/leaf.key" "$out" \
+        || { echo "cockpit_install_leaf returned non-zero"; return 1; }
+    [ -f "$out" ] || { echo "combined PEM not created"; return 1; }
+    # Cert must parse from the combined file
+    openssl x509 -in "$out" -noout >/dev/null 2>&1 \
+        || { echo "combined PEM does not parse as cert"; return 1; }
+    # Key must parse from the combined file
+    openssl pkey -in "$out" -noout >/dev/null 2>&1 \
+        || { echo "combined PEM does not parse as key"; return 1; }
+    # Key must match the cert
+    local crt_pub key_pub
+    crt_pub=$(openssl x509 -in "$out" -noout -pubkey 2>/dev/null)
+    key_pub=$(openssl pkey -in "$out" -pubout 2>/dev/null)
+    assert_eq "$crt_pub" "$key_pub" "combined PEM key must match cert" || return 1
+}
+
+test_cockpit_install_leaf_mode_is_0640() {
+    local d="$TMPDIR_ROOT/case_cockpit_mode"
+    mkdir -p "$d"
+    halos_ca_ensure_auto "$d" || return 1
+    halos_ca_sign_leaf \
+        "$d/ca.crt" "$d/ca.key" \
+        "$d/leaf.crt" "$d/leaf.key" \
+        "DNS:device.local" "device.local" \
+        || return 1
+    local out="$d/99-halos.cert"
+    halos_cockpit_install_leaf "$d/leaf.crt" "$d/leaf.key" "$out" || return 1
+    local mode; mode=$(_stat_mode "$out")
+    assert_eq "$mode" "640" "combined PEM mode must be 0640" || return 1
+}
+
+test_cockpit_install_leaf_rejects_mismatched_pair() {
+    # Cross-CA fixture: leaf from CA-A, key from a CA-B-signed leaf. Same
+    # pattern as test_sign_leaf_does_not_verify_against_other_ca, but applied
+    # to the cockpit install path which must reject the mismatch.
+    local da="$TMPDIR_ROOT/case_cockpit_mismatch_a"
+    local db="$TMPDIR_ROOT/case_cockpit_mismatch_b"
+    halos_ca_ensure_auto "$da" || return 1
+    halos_ca_ensure_auto "$db" || return 1
+    halos_ca_sign_leaf \
+        "$da/ca.crt" "$da/ca.key" \
+        "$da/leaf.crt" "$da/leaf.key" \
+        "DNS:device.local" "device.local" \
+        || return 1
+    halos_ca_sign_leaf \
+        "$db/ca.crt" "$db/ca.key" \
+        "$db/leaf.crt" "$db/leaf.key" \
+        "DNS:device.local" "device.local" \
+        || return 1
+    local out="$TMPDIR_ROOT/case_cockpit_mismatch_out.cert"
+    halos_cockpit_install_leaf "$da/leaf.crt" "$db/leaf.key" "$out" >/dev/null 2>&1
+    local rc=$?
+    assert_eq "$rc" "1" "mismatched cert/key must exit 1" || return 1
+    [ ! -f "$out" ] || { echo "no output file should be written on validation failure"; return 1; }
+    [ ! -f "${out}.new" ] || { echo "no .new debris should remain on failure"; return 1; }
+}
+
+test_cockpit_install_leaf_preserves_existing_on_failure() {
+    # Write a good combined PEM first, then call with a mismatched pair and
+    # confirm the existing file is unchanged. Mirrors the
+    # test_sign_leaf_preserves_existing_on_failure invariant.
+    local da="$TMPDIR_ROOT/case_cockpit_preserve_a"
+    local db="$TMPDIR_ROOT/case_cockpit_preserve_b"
+    halos_ca_ensure_auto "$da" || return 1
+    halos_ca_ensure_auto "$db" || return 1
+    halos_ca_sign_leaf \
+        "$da/ca.crt" "$da/ca.key" \
+        "$da/leaf.crt" "$da/leaf.key" \
+        "DNS:device.local" "device.local" \
+        || return 1
+    halos_ca_sign_leaf \
+        "$db/ca.crt" "$db/ca.key" \
+        "$db/leaf.crt" "$db/leaf.key" \
+        "DNS:device.local" "device.local" \
+        || return 1
+    local out="$TMPDIR_ROOT/case_cockpit_preserve_out.cert"
+    # Install the good pair first
+    halos_cockpit_install_leaf "$da/leaf.crt" "$da/leaf.key" "$out" || return 1
+    local good_hash; good_hash=$(openssl dgst -sha256 "$out" | awk '{print $NF}')
+    # Now call with a mismatched pair — must fail and leave existing file unchanged
+    halos_cockpit_install_leaf "$da/leaf.crt" "$db/leaf.key" "$out" >/dev/null 2>&1
+    local rc=$?
+    assert_eq "$rc" "1" "mismatched pair must fail with rc=1" || return 1
+    local after_hash; after_hash=$(openssl dgst -sha256 "$out" | awk '{print $NF}')
+    assert_eq "$after_hash" "$good_hash" "previous combined PEM must be preserved on failure" || return 1
+    [ ! -f "${out}.new" ] || { echo "no .new debris should remain on failure"; return 1; }
+}
+
+test_cockpit_install_leaf_no_new_debris_on_success() {
+    local d="$TMPDIR_ROOT/case_cockpit_no_debris"
+    mkdir -p "$d"
+    halos_ca_ensure_auto "$d" || return 1
+    halos_ca_sign_leaf \
+        "$d/ca.crt" "$d/ca.key" \
+        "$d/leaf.crt" "$d/leaf.key" \
+        "DNS:device.local" "device.local" \
+        || return 1
+    local out="$d/99-halos.cert"
+    halos_cockpit_install_leaf "$d/leaf.crt" "$d/leaf.key" "$out" || return 1
+    [ ! -f "${out}.new" ] || { echo ".new sibling should not remain after success"; return 1; }
+}
+
+test_cockpit_install_leaf_missing_args_errors() {
+    halos_cockpit_install_leaf "" "" "" >/dev/null 2>&1
+    local rc=$?
+    assert_eq "$rc" "2" "missing args must exit 2 (caller bug)" || return 1
+}
+
+test_cockpit_install_leaf_missing_files_errors() {
+    local d="$TMPDIR_ROOT/case_cockpit_missing_files"
+    mkdir -p "$d"
+    halos_cockpit_install_leaf "$d/nope.crt" "$d/nope.key" "$d/out.cert" >/dev/null 2>&1
+    local rc=$?
+    assert_eq "$rc" "1" "missing source files must exit 1 (runtime failure)" || return 1
+    [ ! -f "$d/out.cert" ] || { echo "no output file should be written"; return 1; }
+    [ ! -f "$d/out.cert.new" ] || { echo "no .new debris should remain"; return 1; }
+}
+
 # ---------------------------------------------------------------------------
 
 run_test test_ensure_auto_generates_files
@@ -760,6 +888,13 @@ run_test test_select_active_partial_custom_fails_loud
 run_test test_select_active_invalid_custom_fails_loud
 run_test test_select_active_switch_custom_to_auto
 run_test test_select_active_switch_auto_to_custom
+run_test test_cockpit_install_leaf_writes_valid_combined_pem
+run_test test_cockpit_install_leaf_mode_is_0640
+run_test test_cockpit_install_leaf_rejects_mismatched_pair
+run_test test_cockpit_install_leaf_preserves_existing_on_failure
+run_test test_cockpit_install_leaf_no_new_debris_on_success
+run_test test_cockpit_install_leaf_missing_args_errors
+run_test test_cockpit_install_leaf_missing_files_errors
 
 echo
 echo "Passed: $PASSES, Failed: $FAILS"
