@@ -5,3 +5,6 @@ debian/files
 debian/halos-core-containers/
 debian/*.substvars
 debian/*.debhelper
+
+# Local git worktrees for parallel work
+.worktrees/
