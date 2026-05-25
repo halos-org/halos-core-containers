@@ -11,10 +11,17 @@ case "$1" in
         # Create configuration directory if it doesn't exist
         mkdir -p "${ETC_DIR}"
 
-        # Create env.defaults with CONTAINER_DATA_ROOT
+        # Create env.defaults with the canonical package layout. PACKAGE_NAME
+        # is exported here (not derived at runtime from $(basename $SCRIPT_DIR)
+        # in prestart.sh) so docker-compose.yml and prestart agree on every
+        # bind-mount path regardless of where prestart was invoked from. This
+        # prevents the dev-time drift where running prestart out of a worktree
+        # (.worktrees/<branch>/) would otherwise compute a different
+        # PACKAGE_NAME than the one compose hardcodes.
         cat > "${ETC_DIR}/env.defaults" << EOF
 # System-managed environment variables (do not modify)
 CONTAINER_DATA_ROOT="${DATA_DIR}"
+PACKAGE_NAME="${PKG_NAME}"
 EOF
 
         # Create data directory structure
@@ -24,6 +31,12 @@ EOF
         mkdir -p "${DATA_DIR}/homarr/configs"
         mkdir -p "${DATA_DIR}/homarr/data"
         mkdir -p "${DATA_DIR}/homarr/icons"
+        # Public CA bind-mount target for the ca-download sidecar.
+        # Mirrors prestart's certs/{ca,public} subdir layout under PKG_NAME/.
+        # prestart.sh also ensures this directory; created here so the
+        # docker-compose bind mount has a target on first boot before any
+        # prestart run.
+        mkdir -p "${DATA_DIR}/${PKG_NAME}/certs/public"
 
         # Create routing directories used by other container apps
         mkdir -p /etc/halos/routing.d

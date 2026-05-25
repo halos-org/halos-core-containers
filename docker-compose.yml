@@ -177,6 +177,55 @@ services:
       options:
         tag: "{{.Name}}"
 
+  ca-download:
+    # Sidecar that publishes the active device CA at /halos-ca.crt so
+    # operators can install one trust anchor for all services on this device.
+    # Routed by Traefik (no host port published). prestart.sh copies the
+    # active CA's PEM bytes into the mounted dir each run.
+    image: nginx:1.27-alpine
+    container_name: ca-download
+    init: true
+    restart: unless-stopped
+    volumes:
+      # PACKAGE_NAME is normally injected by systemd via env.defaults
+      # (debian/postinst writes it there). The :-halos-core-containers
+      # fallback keeps `docker compose` invocations outside systemd (e.g.,
+      # local dev with `docker compose config`) working with the canonical
+      # path layout.
+      - ${CONTAINER_DATA_ROOT}/${PACKAGE_NAME:-halos-core-containers}/certs/public:/srv:ro
+      - ./assets/ca-download/nginx.conf:/etc/nginx/nginx.conf:ro
+    healthcheck:
+      # Probe the actual served path so a missing or unreadable
+      # /srv/halos-ca.crt marks the container unhealthy (autoheal then
+      # restarts it). A bare /healthz probe stayed healthy while nginx
+      # 404'd the cert, which hid breakage from operators.
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost/halos-ca.crt"]
+      interval: 10s
+      timeout: 5s
+      start_period: 30s
+      retries: 3
+    networks:
+      - proxy
+    labels:
+      - traefik.enable=true
+      # HTTP — exact-path match, redirected to HTTPS. Priority 200 beats
+      # homarr's catch-all PathPrefix(`/`) at priority 1.
+      - traefik.http.routers.ca-download-http.rule=Path(`/halos-ca.crt`)
+      - traefik.http.routers.ca-download-http.entrypoints=web
+      - traefik.http.routers.ca-download-http.middlewares=redirect-to-https@file
+      - traefik.http.routers.ca-download-http.priority=200
+      # HTTPS — exact-path match. No ForwardAuth: this is a public trust
+      # anchor; gating it would defeat the chicken-and-egg bootstrap.
+      - traefik.http.routers.ca-download-secure.rule=Path(`/halos-ca.crt`)
+      - traefik.http.routers.ca-download-secure.entrypoints=websecure
+      - traefik.http.routers.ca-download-secure.tls=true
+      - traefik.http.routers.ca-download-secure.priority=200
+      - traefik.http.services.ca-download.loadbalancer.server.port=80
+    logging:
+      driver: journald
+      options:
+        tag: "{{.Name}}"
+
   autoheal:
     image: willfarrell/autoheal:1.2.0
     container_name: autoheal

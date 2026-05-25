@@ -117,6 +117,24 @@ CA_CRT="${HALOS_CA_ACTIVE_CRT}"
 CA_KEY="${HALOS_CA_ACTIVE_KEY}"
 echo "Active CA: ${CA_CRT} (mode=${HALOS_CA_ACTIVE_MODE})"
 
+# Publish the active CA's PEM bytes to a public directory the ca-download
+# sidecar bind-mounts. Implementation + rationale (don't mount the symlink
+# directly; don't expose the custom-CA dir to the sidecar) lives in
+# halos_ca_publish_public — see assets/lib-ca.sh.
+#
+# Refreshed every prestart, BEFORE the leaf-signing path, so the published
+# bytes track whichever CA halos_ca_select_active picked — even on boots
+# that don't re-sign the leaf.
+#
+# Tolerate failure: the publish is auxiliary. If it fails (transient FS
+# hiccup, unreadable active CA mid-edit), let prestart continue so the rest
+# of the web stack (Traefik/Authelia/Homarr) still comes up. The previous
+# public copy (if any) is preserved by the helper.
+PUBLIC_CA_DIR="${CONTAINER_DATA_ROOT}/${PACKAGE_NAME}/certs/public"
+if ! halos_ca_publish_public "${HALOS_CA_ACTIVE_CRT}" "${PUBLIC_CA_DIR}"; then
+    echo "WARNING: failed to refresh public CA copy at ${PUBLIC_CA_DIR}/halos-ca.crt; the /halos-ca.crt download endpoint may serve stale or no CA until the next successful prestart. The rest of prestart continues." >&2
+fi
+
 # Explicit `|| exit` because bash `set -e` does NOT abort on a command-
 # substitution failure inside an assignment. Without this guard, a corrupt CA
 # would silently produce CA_FINGERPRINT="" and feed a malformed sentinel into
