@@ -31,27 +31,73 @@
 # a bad clock self-heal after NTP recovers.
 
 # Tuning (constants, not env-overridable — keep the surface tight) -----------
+#
+# Naming convention:
+#   *_VALIDITY_DAYS   — lifetime stamped into the cert at signing time
+#   *_THRESHOLD_DAYS  — remaining-validity gate that triggers an action
+#                       (regenerate / renew / reject / warn)
 
-HALOS_CA_DAYS=7300            # 20 years
-HALOS_CA_LEAF_DAYS=3650       # 10 years
+# --- Validity (lifetime at signing time) ---
+
+HALOS_CA_VALIDITY_DAYS=7300       # 20 years
+
+# Leaf validity. Capped at 825 days because Apple's Secure Transport rejects
+# SSL server certs with longer validity (CA/B Forum baseline + Apple policy
+# since 2019-07-01), regardless of whether the root is publicly trusted or
+# user-installed. Affects Safari, Chrome/Brave/Edge, /usr/bin/curl, nscurl,
+# and every macOS app using SecTrustEvaluate. Linux/Windows don't enforce
+# this, but the 825-day ceiling is the binding constraint.
+# Reference: https://support.apple.com/en-us/103769
+#
+# Set to 824, not 825: openssl's `-days N` with an explicit -not_before
+# yields notAfter - notBefore = (N+1) days (inclusive count). Empirically
+# verified — 825 produces 826-day certs that Apple rejects. The 1-day
+# headroom keeps us safely at-but-not-over the ceiling.
+HALOS_CA_LEAF_VALIDITY_DAYS=824
+
 HALOS_CA_BACKDATE_HOURS=24
 HALOS_CA_SUBJECT="/CN=HaLOS Device CA"
 
-# Auto-CA rotation trigger: rotate the device-generated CA when its remaining
-# validity drops below this many days. Set well below the 20y validity, so
-# the realistic trigger is clock skew / corruption — not natural aging.
-HALOS_CA_AUTO_ROTATE_DAYS=365
+# --- Thresholds (remaining-validity gates for actions) ---
 
-# Custom (operator-supplied) CA acceptance thresholds:
-#   - hard floor: refuse to use a custom CA with less than this many days
-#     remaining. Lower than the auto-rotate threshold because operators
-#     deliberately choose short-lived intermediates in some deployments
-#     and we don't want to refuse a valid 6-month CA out of the box.
-#   - warn window: emit a loud WARNING in prestart logs when remaining
-#     validity is below this, even if still above the hard floor. Gives
-#     operators a documented runway to rotate before the hard cliff.
-HALOS_CA_CUSTOM_MIN_DAYS=30
-HALOS_CA_CUSTOM_WARN_DAYS=90
+# Re-sign the leaf when remaining validity drops below this. Sized so
+# operators have generous runway (~7% of leaf lifetime); any reboot during
+# the window triggers transparent renewal. The CA stays trusted across leaf
+# rotation because the same CA signs the new leaf — installed trust anchors
+# do NOT need to be re-installed (the CA itself is valid for
+# HALOS_CA_VALIDITY_DAYS).
+HALOS_CA_LEAF_RENEW_THRESHOLD_DAYS=60
+
+# Regenerate the auto-CA when its remaining validity drops below this.
+# Despite the threshold being set well below the 20-year validity, the
+# realistic trigger is NOT natural aging — that branch never fires within
+# any plausible device lifetime.
+#
+# The actual purpose is clock-skew self-heal. Raspberry Pi hardware has no
+# RTC; first boot starts with system time = whatever /etc/fake-hwclock.data
+# last saved (often 1970, or the timestamp of the most recent build). If
+# prestart signs the auto-CA at that point, notBefore and notAfter are both
+# wrong by years. When NTP later corrects the clock, the cert appears
+# already expired (or expiring soon), this check fires, and the next
+# prestart regenerates with correct dates. Without this, a Pi that booted
+# before NTP would ship a permanently-broken CA until manual recovery.
+#
+# Same mechanism also covers half-deleted CA files, disk corruption, and
+# any other "cert exists on disk but is unusable" state. Operators who
+# installed the auto-CA into their trust store will see it become invalid
+# when this fires — accepted trade-off for the self-heal property (custom
+# CAs, by contrast, are never auto-regenerated for exactly this reason).
+HALOS_CA_AUTO_REGEN_THRESHOLD_DAYS=365
+
+# Custom (operator-supplied) CA acceptance thresholds. Operators may
+# deliberately ship short-lived intermediates, so REJECT is lower than the
+# auto-CA regen threshold — we don't want to reject a valid 6-month CA on
+# arrival. WARN gives operators a documented runway to rotate before
+# hitting the REJECT cliff. Unlike the auto-CA, custom CAs are never
+# auto-regenerated; operator owns rotation (silent regen would orphan the
+# trust anchors they distributed to a fleet).
+HALOS_CA_CUSTOM_REJECT_THRESHOLD_DAYS=30
+HALOS_CA_CUSTOM_WARN_THRESHOLD_DAYS=90
 
 # Internal -------------------------------------------------------------------
 
@@ -119,18 +165,37 @@ halos_ca_fingerprint() {
     printf '%s' "$fp"
 }
 
-# _halos_ca_is_healthy <crt_path> [min_days]
-# Returns 0 if the cert parses, hasn't expired, and has at least <min_days>
-# of validity left. <min_days> defaults to HALOS_CA_AUTO_ROTATE_DAYS for
-# backwards compatibility with the auto-CA rotation call site; consumers
-# checking custom-CA acceptance pass HALOS_CA_CUSTOM_MIN_DAYS explicitly.
+# _halos_ca_is_healthy <crt_path> [min_remaining_days]
+# Returns 0 if the cert parses, hasn't expired, and has at least
+# <min_remaining_days> of validity left. <min_remaining_days> defaults to
+# HALOS_CA_AUTO_REGEN_THRESHOLD_DAYS for backwards compatibility with the
+# auto-CA call site; consumers checking custom-CA acceptance pass
+# HALOS_CA_CUSTOM_REJECT_THRESHOLD_DAYS explicitly.
 _halos_ca_is_healthy() {
     local crt="$1"
-    local min_days="${2:-$HALOS_CA_AUTO_ROTATE_DAYS}"
+    local min_remaining_days="${2:-$HALOS_CA_AUTO_REGEN_THRESHOLD_DAYS}"
     [ -f "$crt" ] || return 1
     # -checkend N: returns 0 if cert expires more than N seconds in the future.
-    local horizon=$((min_days * 86400))
+    local horizon=$((min_remaining_days * 86400))
     openssl x509 -in "$crt" -noout -checkend "$horizon" >/dev/null 2>&1
+}
+
+# halos_ca_leaf_needs_renewal <crt_path>
+# Returns 0 (true) if the leaf at <crt_path> is missing, expired, or has
+# fewer than HALOS_CA_LEAF_RENEW_THRESHOLD_DAYS of validity remaining;
+# returns 1 (false) when the leaf is still healthy. Used by prestart.sh
+# to force a re-sign independent of the hostname/CA-fingerprint sentinel,
+# so an unchanged-config device still rotates its leaf before Apple's
+# 825-day ceiling expires the cert.
+halos_ca_leaf_needs_renewal() {
+    local crt="$1"
+    [ -f "$crt" ] || return 0
+    # Inverted predicate: _halos_ca_is_healthy returns 0 when there's at
+    # least the requested headroom; we want "needs renewal" = "not healthy".
+    if _halos_ca_is_healthy "$crt" "$HALOS_CA_LEAF_RENEW_THRESHOLD_DAYS"; then
+        return 1
+    fi
+    return 0
 }
 
 # halos_ca_ensure_auto <output_dir>
@@ -183,7 +248,7 @@ halos_ca_ensure_auto() {
     # closing the race window between cert creation and chmod where another
     # local UID could open the key fd while it was world-readable.
     if ! ( umask 077 && openssl req -x509 -nodes -newkey rsa:4096 \
-            -days "$HALOS_CA_DAYS" \
+            -days "$HALOS_CA_VALIDITY_DAYS" \
             -not_before "$not_before" \
             -keyout "$ca_key_new" \
             -out "$ca_crt_new" \
@@ -240,14 +305,14 @@ halos_ca_validate_pair() {
         return 1
     fi
     # Hard floor: refuse certs below the custom-CA minimum remaining validity.
-    if ! _halos_ca_is_healthy "$crt" "$HALOS_CA_CUSTOM_MIN_DAYS"; then
-        echo "halos_ca_validate_pair: cert at $crt is expired or has under ${HALOS_CA_CUSTOM_MIN_DAYS}d remaining validity (hard floor for custom CAs)" >&2
+    if ! _halos_ca_is_healthy "$crt" "$HALOS_CA_CUSTOM_REJECT_THRESHOLD_DAYS"; then
+        echo "halos_ca_validate_pair: cert at $crt is expired or has under ${HALOS_CA_CUSTOM_REJECT_THRESHOLD_DAYS}d remaining validity (hard floor for custom CAs)" >&2
         return 1
     fi
     # Soft warning: log but pass validation if remaining is below the warn
     # window. Gives operators a documented runway to rotate before the cliff.
-    if ! _halos_ca_is_healthy "$crt" "$HALOS_CA_CUSTOM_WARN_DAYS"; then
-        echo "halos_ca_validate_pair: WARNING: cert at $crt has under ${HALOS_CA_CUSTOM_WARN_DAYS}d remaining validity; rotate before it falls below the ${HALOS_CA_CUSTOM_MIN_DAYS}d hard floor" >&2
+    if ! _halos_ca_is_healthy "$crt" "$HALOS_CA_CUSTOM_WARN_THRESHOLD_DAYS"; then
+        echo "halos_ca_validate_pair: WARNING: cert at $crt has under ${HALOS_CA_CUSTOM_WARN_THRESHOLD_DAYS}d remaining validity; rotate before it falls below the ${HALOS_CA_CUSTOM_REJECT_THRESHOLD_DAYS}d hard floor" >&2
     fi
     if ! openssl pkey -in "$key" -noout 2>/dev/null; then
         echo "halos_ca_validate_pair: key at $key does not parse as a private key" >&2
@@ -369,7 +434,7 @@ halos_ca_select_active() {
 # stale "everything matches" sentinel).
 halos_ca_sign_leaf() {
     local ca_crt="$1" ca_key="$2" leaf_crt="$3" leaf_key="$4" san="$5" cn="$6"
-    local days="${7:-$HALOS_CA_LEAF_DAYS}"
+    local days="${7:-$HALOS_CA_LEAF_VALIDITY_DAYS}"
 
     if [ -z "$ca_crt" ] || [ -z "$ca_key" ] || [ -z "$leaf_crt" ] || \
        [ -z "$leaf_key" ] || [ -z "$san" ] || [ -z "$cn" ]; then
