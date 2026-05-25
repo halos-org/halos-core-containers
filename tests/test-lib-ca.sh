@@ -778,7 +778,7 @@ test_cockpit_install_leaf_rejects_mismatched_pair() {
     local rc=$?
     assert_eq "$rc" "1" "mismatched cert/key must exit 1" || return 1
     [ ! -f "$out" ] || { echo "no output file should be written on validation failure"; return 1; }
-    [ ! -f "${out}.new" ] || { echo "no .new debris should remain on failure"; return 1; }
+    ! ls "${out}".new.* >/dev/null 2>&1 || { echo "no .new.<pid> debris should remain on failure"; return 1; }
 }
 
 test_cockpit_install_leaf_preserves_existing_on_failure() {
@@ -809,7 +809,7 @@ test_cockpit_install_leaf_preserves_existing_on_failure() {
     assert_eq "$rc" "1" "mismatched pair must fail with rc=1" || return 1
     local after_hash; after_hash=$(openssl dgst -sha256 "$out" | awk '{print $NF}')
     assert_eq "$after_hash" "$good_hash" "previous combined PEM must be preserved on failure" || return 1
-    [ ! -f "${out}.new" ] || { echo "no .new debris should remain on failure"; return 1; }
+    ! ls "${out}".new.* >/dev/null 2>&1 || { echo "no .new.<pid> debris should remain on failure"; return 1; }
 }
 
 test_cockpit_install_leaf_no_new_debris_on_success() {
@@ -823,7 +823,7 @@ test_cockpit_install_leaf_no_new_debris_on_success() {
         || return 1
     local out="$d/99-halos.cert"
     halos_cockpit_install_leaf "$d/leaf.crt" "$d/leaf.key" "$out" || return 1
-    [ ! -f "${out}.new" ] || { echo ".new sibling should not remain after success"; return 1; }
+    ! ls "${out}".new.* >/dev/null 2>&1 || { echo ".new.<pid> sibling should not remain after success"; return 1; }
 }
 
 test_cockpit_install_leaf_missing_args_errors() {
@@ -839,7 +839,228 @@ test_cockpit_install_leaf_missing_files_errors() {
     local rc=$?
     assert_eq "$rc" "1" "missing source files must exit 1 (runtime failure)" || return 1
     [ ! -f "$d/out.cert" ] || { echo "no output file should be written"; return 1; }
-    [ ! -f "$d/out.cert.new" ] || { echo "no .new debris should remain"; return 1; }
+    # The PID-suffixed .new sibling must not leak either.
+    ! ls "$d"/out.cert.new.* >/dev/null 2>&1 || { echo "no .new.<pid> debris should remain"; return 1; }
+}
+
+test_cockpit_install_leaf_missing_cert_only_isolates_branch() {
+    # Regression for the unit-test that previously passed BOTH paths missing,
+    # so only the leaf_crt branch ever fired. Pass a real key and a missing
+    # cert; rc must be 1 and the diagnostic must be the cert-missing one.
+    local d="$TMPDIR_ROOT/case_cockpit_missing_cert_only"
+    mkdir -p "$d"
+    halos_ca_ensure_auto "$d" || return 1
+    halos_ca_sign_leaf \
+        "$d/ca.crt" "$d/ca.key" \
+        "$d/leaf.crt" "$d/leaf.key" \
+        "DNS:device.local" "device.local" \
+        || return 1
+    rm -f "$d/leaf.crt"
+    local stderr_capture
+    stderr_capture=$(halos_cockpit_install_leaf "$d/leaf.crt" "$d/leaf.key" "$d/out.cert" 2>&1)
+    local rc=$?
+    assert_eq "$rc" "1" "missing-cert-only must exit 1" || return 1
+    if ! printf '%s' "$stderr_capture" | grep -q 'leaf cert missing'; then
+        echo "expected 'leaf cert missing' diagnostic; got: $stderr_capture"
+        return 1
+    fi
+}
+
+test_cockpit_install_leaf_missing_key_only_isolates_branch() {
+    # Symmetric: real cert, missing key. Drives the leaf_key branch which the
+    # combined-both-missing test never exercised.
+    local d="$TMPDIR_ROOT/case_cockpit_missing_key_only"
+    mkdir -p "$d"
+    halos_ca_ensure_auto "$d" || return 1
+    halos_ca_sign_leaf \
+        "$d/ca.crt" "$d/ca.key" \
+        "$d/leaf.crt" "$d/leaf.key" \
+        "DNS:device.local" "device.local" \
+        || return 1
+    rm -f "$d/leaf.key"
+    local stderr_capture
+    stderr_capture=$(halos_cockpit_install_leaf "$d/leaf.crt" "$d/leaf.key" "$d/out.cert" 2>&1)
+    local rc=$?
+    assert_eq "$rc" "1" "missing-key-only must exit 1" || return 1
+    if ! printf '%s' "$stderr_capture" | grep -q 'leaf key missing'; then
+        echo "expected 'leaf key missing' diagnostic; got: $stderr_capture"
+        return 1
+    fi
+}
+
+test_cockpit_install_leaf_rejects_malformed_cert() {
+    # Cert content is garbage but key is well-formed. Must fail the cert-parse
+    # early-exit branch (lib-ca.sh openssl x509 -in -noout) before reaching
+    # the key-match check, returning rc=1 with no output file.
+    local d="$TMPDIR_ROOT/case_cockpit_malformed_cert"
+    mkdir -p "$d"
+    halos_ca_ensure_auto "$d" || return 1
+    halos_ca_sign_leaf \
+        "$d/ca.crt" "$d/ca.key" \
+        "$d/leaf.crt" "$d/leaf.key" \
+        "DNS:device.local" "device.local" \
+        || return 1
+    printf 'not a certificate\n' > "$d/leaf.crt"
+    local out="$d/99-halos.cert"
+    halos_cockpit_install_leaf "$d/leaf.crt" "$d/leaf.key" "$out" >/dev/null 2>&1
+    local rc=$?
+    assert_eq "$rc" "1" "malformed cert must exit 1" || return 1
+    [ ! -f "$out" ] || { echo "no output should be written"; return 1; }
+}
+
+test_cockpit_install_leaf_rejects_malformed_key() {
+    # Symmetric: well-formed cert, garbage key. Must fail the key-parse
+    # early-exit branch.
+    local d="$TMPDIR_ROOT/case_cockpit_malformed_key"
+    mkdir -p "$d"
+    halos_ca_ensure_auto "$d" || return 1
+    halos_ca_sign_leaf \
+        "$d/ca.crt" "$d/ca.key" \
+        "$d/leaf.crt" "$d/leaf.key" \
+        "DNS:device.local" "device.local" \
+        || return 1
+    printf 'not a key\n' > "$d/leaf.key"
+    local out="$d/99-halos.cert"
+    halos_cockpit_install_leaf "$d/leaf.crt" "$d/leaf.key" "$out" >/dev/null 2>&1
+    local rc=$?
+    assert_eq "$rc" "1" "malformed key must exit 1" || return 1
+    [ ! -f "$out" ] || { echo "no output should be written"; return 1; }
+}
+
+test_cockpit_install_leaf_logs_notice_when_group_missing() {
+    # Shadow `getent` inside a subshell to force the group-absent path.
+    # Must succeed (rc=0), leave the file in place, and emit a NOTICE.
+    local d="$TMPDIR_ROOT/case_cockpit_group_missing"
+    mkdir -p "$d"
+    halos_ca_ensure_auto "$d" || return 1
+    halos_ca_sign_leaf \
+        "$d/ca.crt" "$d/ca.key" \
+        "$d/leaf.crt" "$d/leaf.key" \
+        "DNS:device.local" "device.local" \
+        || return 1
+    local out="$d/99-halos.cert"
+    local stderr_capture rc
+    stderr_capture=$(
+        getent() { return 2; }
+        halos_cockpit_install_leaf "$d/leaf.crt" "$d/leaf.key" "$out" 2>&1
+    )
+    rc=$?
+    assert_eq "$rc" "0" "group-absent path must still succeed" || return 1
+    [ -f "$out" ] || { echo "output file must exist"; return 1; }
+    if ! printf '%s' "$stderr_capture" | grep -q 'NOTICE.*cockpit-ws group not found'; then
+        echo "expected NOTICE on stderr; got: $stderr_capture"
+        return 1
+    fi
+}
+
+test_cockpit_install_leaf_rc1_when_chown_fails_with_group_present() {
+    # Shadow `getent` to return success AND `chown` to return failure. The
+    # helper must rm the .new debris, log loudly, and rc=1 — the previous
+    # silent-success behavior (root:root file with the cockpit-ws group bit
+    # useless) is what cockpit-tls cannot recover from.
+    local d="$TMPDIR_ROOT/case_cockpit_chown_fails"
+    mkdir -p "$d"
+    halos_ca_ensure_auto "$d" || return 1
+    halos_ca_sign_leaf \
+        "$d/ca.crt" "$d/ca.key" \
+        "$d/leaf.crt" "$d/leaf.key" \
+        "DNS:device.local" "device.local" \
+        || return 1
+    local out="$d/99-halos.cert"
+    local stderr_capture rc
+    stderr_capture=$(
+        getent() { return 0; }
+        chown() { return 1; }
+        halos_cockpit_install_leaf "$d/leaf.crt" "$d/leaf.key" "$out" 2>&1
+    )
+    rc=$?
+    assert_eq "$rc" "1" "chown failure with group present must exit 1" || return 1
+    [ ! -f "$out" ] || { echo "no output file should be written"; return 1; }
+    ! ls "$d"/99-halos.cert.new.* >/dev/null 2>&1 || { echo "no .new.<pid> debris should remain"; return 1; }
+    if ! printf '%s' "$stderr_capture" | grep -q 'chown root:cockpit-ws failed'; then
+        echo "expected chown-fail diagnostic; got: $stderr_capture"
+        return 1
+    fi
+}
+
+test_cockpit_install_leaf_refuses_directory_at_out_path() {
+    # Defense-in-depth: a pre-existing directory at out_path would cause plain
+    # `mv` to silently move the .new file INTO it, masking the install. The
+    # helper must detect this and refuse.
+    local d="$TMPDIR_ROOT/case_cockpit_dir_at_out"
+    mkdir -p "$d"
+    halos_ca_ensure_auto "$d" || return 1
+    halos_ca_sign_leaf \
+        "$d/ca.crt" "$d/ca.key" \
+        "$d/leaf.crt" "$d/leaf.key" \
+        "DNS:device.local" "device.local" \
+        || return 1
+    local out="$d/99-halos.cert"
+    mkdir -p "$out"   # out_path is now a directory
+    local stderr_capture
+    stderr_capture=$(halos_cockpit_install_leaf "$d/leaf.crt" "$d/leaf.key" "$out" 2>&1)
+    local rc=$?
+    assert_eq "$rc" "1" "directory at out_path must exit 1" || return 1
+    [ -d "$out" ] || { echo "directory at out_path must be preserved (we don't rm it)"; return 1; }
+    ! ls "$d"/99-halos.cert.new.* >/dev/null 2>&1 || { echo "no .new.<pid> debris should remain"; return 1; }
+    if ! printf '%s' "$stderr_capture" | grep -q 'refusing to install over directory'; then
+        echo "expected directory-refusal diagnostic; got: $stderr_capture"
+        return 1
+    fi
+}
+
+test_cockpit_install_leaf_no_symlink_follow_on_new() {
+    # Pre-create out_path.new.<pid> as a symlink pointing at a canary file.
+    # Helper must rm the symlink before writing (rm -f unlinks without
+    # following), so the canary's contents are untouched. The PID-suffixed
+    # name makes the symlink-attack guess race-prone in practice but the
+    # rm-before-cat guarantees it across both shapes.
+    local d="$TMPDIR_ROOT/case_cockpit_symlink"
+    mkdir -p "$d"
+    halos_ca_ensure_auto "$d" || return 1
+    halos_ca_sign_leaf \
+        "$d/ca.crt" "$d/ca.key" \
+        "$d/leaf.crt" "$d/leaf.key" \
+        "DNS:device.local" "device.local" \
+        || return 1
+    local out="$d/99-halos.cert"
+    local canary="$d/canary"
+    printf 'canary contents must not be overwritten\n' > "$canary"
+    # Plant a symlink at the exact PID-suffixed stage path so the rm-before-cat
+    # guard is exercised. $$ inside this test is the parent shell pid; the
+    # helper invocation runs in the same shell, so $$ matches.
+    ln -s "$canary" "${out}.new.$$"
+    halos_cockpit_install_leaf "$d/leaf.crt" "$d/leaf.key" "$out" || return 1
+    # Canary contents must be unchanged: the helper must not have followed
+    # the symlink and written the leaf key into the canary.
+    if ! grep -q 'canary contents must not be overwritten' "$canary"; then
+        echo "canary was overwritten — symlink was followed"
+        return 1
+    fi
+    [ -f "$out" ] || { echo "install must still succeed"; return 1; }
+}
+
+test_cockpit_install_leaf_write_failure_with_missing_parent() {
+    # out_path under a nonexistent directory: helper does not mkdir -p
+    # parents, so the cat redirection fails. Must rc=1 with no debris and
+    # the cat-fail diagnostic.
+    local d="$TMPDIR_ROOT/case_cockpit_write_fail"
+    mkdir -p "$d"
+    halos_ca_ensure_auto "$d" || return 1
+    halos_ca_sign_leaf \
+        "$d/ca.crt" "$d/ca.key" \
+        "$d/leaf.crt" "$d/leaf.key" \
+        "DNS:device.local" "device.local" \
+        || return 1
+    local stderr_capture
+    stderr_capture=$(halos_cockpit_install_leaf "$d/leaf.crt" "$d/leaf.key" "$d/no/such/dir/out.cert" 2>&1)
+    local rc=$?
+    assert_eq "$rc" "1" "missing parent dir must exit 1" || return 1
+    [ ! -d "$d/no" ] || { echo "helper must not have created parent dirs"; return 1; }
+    if ! printf '%s' "$stderr_capture" | grep -q 'failed to write combined PEM'; then
+        echo "expected write-failure diagnostic; got: $stderr_capture"
+        return 1
+    fi
 }
 
 # ---------------------------------------------------------------------------
@@ -895,6 +1116,15 @@ run_test test_cockpit_install_leaf_preserves_existing_on_failure
 run_test test_cockpit_install_leaf_no_new_debris_on_success
 run_test test_cockpit_install_leaf_missing_args_errors
 run_test test_cockpit_install_leaf_missing_files_errors
+run_test test_cockpit_install_leaf_missing_cert_only_isolates_branch
+run_test test_cockpit_install_leaf_missing_key_only_isolates_branch
+run_test test_cockpit_install_leaf_rejects_malformed_cert
+run_test test_cockpit_install_leaf_rejects_malformed_key
+run_test test_cockpit_install_leaf_logs_notice_when_group_missing
+run_test test_cockpit_install_leaf_rc1_when_chown_fails_with_group_present
+run_test test_cockpit_install_leaf_refuses_directory_at_out_path
+run_test test_cockpit_install_leaf_no_symlink_follow_on_new
+run_test test_cockpit_install_leaf_write_failure_with_missing_parent
 
 echo
 echo "Passed: $PASSES, Failed: $FAILS"

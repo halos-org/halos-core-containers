@@ -213,7 +213,15 @@ COCKPIT_WS_CERTS_DIR="/etc/cockpit/ws-certs.d"
 COCKPIT_LEAF_OVERRIDE="${COCKPIT_WS_CERTS_DIR}/99-halos.cert"
 if [ -d "${COCKPIT_WS_CERTS_DIR}" ]; then
     echo "Installing Cockpit leaf cert override at ${COCKPIT_LEAF_OVERRIDE}..."
-    halos_cockpit_install_leaf "${CERT_FILE}" "${KEY_FILE}" "${COCKPIT_LEAF_OVERRIDE}"
+    # Tolerate failure here on purpose. The Cockpit override is auxiliary —
+    # upstream's 0-self-signed.cert (from cockpit-certificate-ensure) is the
+    # safety-net floor (see docs/CERTS.md). Letting a transient cockpit-install
+    # failure abort prestart would take down Traefik/Authelia/Homarr too, which
+    # is the opposite of the documented design intent. Log loudly so the
+    # operator can investigate, and keep going.
+    if ! halos_cockpit_install_leaf "${CERT_FILE}" "${KEY_FILE}" "${COCKPIT_LEAF_OVERRIDE}"; then
+        echo "WARNING: Cockpit leaf cert install failed; :9090 will keep its previous cert (upstream self-signed if no prior override). The rest of prestart continues." >&2
+    fi
 else
     echo "Skipping Cockpit leaf cert install: ${COCKPIT_WS_CERTS_DIR} does not exist (cockpit-ws not yet installed)"
 fi

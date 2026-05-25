@@ -481,7 +481,16 @@ halos_cockpit_install_leaf() {
         return 1
     fi
 
-    local out_new="${out_path}.new"
+    # PID-suffixed stage name so concurrent prestart invocations (e.g., a manual
+    # `bash prestart.sh` overlapping with a systemd run) don't trample each
+    # other's in-flight `.new` file. The mv into out_path is still atomic per
+    # caller, and per-call cleanup catches our own debris.
+    local out_new="${out_path}.new.$$"
+    # Defense-in-depth against a pre-existing symlink at the stage path: rm
+    # before the cat redirection so `>` does not follow a symlink and write
+    # the leaf private key to an attacker-chosen target. rm -f unlinks
+    # symlinks without following them.
+    rm -f "$out_new"
 
     # umask 077 so the temp file containing the private key is never world-
     # readable, even briefly between creation and the final chmod 0640.
@@ -491,9 +500,10 @@ halos_cockpit_install_leaf() {
         return 1
     fi
 
-    # Validate: parse cert + parse key + confirm key matches cert. Mirrors the
-    # halos_ca_validate_pair key-match technique (inlined here because that
-    # helper additionally demands CA:TRUE, which fails on a leaf).
+    # Validate the freshly-written file (not the inputs) so corrupt-concat
+    # and short-write tearing are caught alongside parse/key-match failures.
+    # Mirrors the halos_ca_validate_pair key-match technique (inlined here
+    # because that helper additionally demands CA:TRUE, which fails on a leaf).
     if ! openssl x509 -in "$out_new" -noout 2>/dev/null; then
         rm -f "$out_new"
         echo "halos_cockpit_install_leaf: combined PEM does not parse as a certificate" >&2
@@ -521,7 +531,11 @@ halos_cockpit_install_leaf() {
         return 1
     fi
 
-    chmod 0640 "$out_new"
+    if ! chmod 0640 "$out_new"; then
+        rm -f "$out_new"
+        echo "halos_cockpit_install_leaf: chmod 0640 failed on $out_new" >&2
+        return 1
+    fi
     # Ownership: cockpit-tls runs under the cockpit-ws group on Debian/cockpit
     # packages. If that group exists, chown to root:cockpit-ws so cockpit-tls
     # can read the key. If not (cockpit-ws not installed, install-order race),
@@ -529,10 +543,32 @@ halos_cockpit_install_leaf() {
     # the next socket activation after the cockpit-ws package install, but the
     # ownership won't auto-correct until the next prestart re-writes the file.
     if getent group cockpit-ws >/dev/null 2>&1; then
-        chown root:cockpit-ws "$out_new" 2>/dev/null || true
+        # Treat chown failure as a hard error: the file is about to land with
+        # mode 0640 root:root, which cockpit-tls (running as cockpit-ws GID)
+        # cannot read. Silent success here was the original failure mode —
+        # operators saw "installed" in logs while cockpit served the upstream
+        # self-signed cert. Fail-loud surfaces the diagnostic instead.
+        if ! chown root:cockpit-ws "$out_new"; then
+            rm -f "$out_new"
+            echo "halos_cockpit_install_leaf: chown root:cockpit-ws failed on $out_new despite the cockpit-ws group existing — cockpit-tls would be unable to read the key. Aborting install; previous override (if any) is preserved." >&2
+            return 1
+        fi
     else
         echo "halos_cockpit_install_leaf: NOTICE: cockpit-ws group not found; leaving $out_path as root:root (cockpit-tls may be unable to read the key until the next prestart after cockpit-ws is installed)" >&2
     fi
 
-    mv "$out_new" "$out_path"
+    # Refuse to install over a pre-existing directory at out_path: plain `mv`
+    # in that case would move out_new INTO the directory (as <dir>/<basename>),
+    # silently succeed, and leave out_path itself an unreadable-as-cert dir.
+    # cockpit-tls would fall back to upstream self-signed with no clear log.
+    if [ -d "$out_path" ]; then
+        rm -f "$out_new"
+        echo "halos_cockpit_install_leaf: refusing to install over directory at $out_path" >&2
+        return 1
+    fi
+    if ! mv "$out_new" "$out_path"; then
+        rm -f "$out_new"
+        echo "halos_cockpit_install_leaf: failed to mv $out_new to $out_path; previous override (if any) is preserved" >&2
+        return 1
+    fi
 }
