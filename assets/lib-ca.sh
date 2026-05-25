@@ -15,6 +15,8 @@
 #                                              pick custom-if-valid / else auto, update symlink
 #   - halos_cockpit_install_leaf <leaf_crt> <leaf_key> <output_path>
 #                                              install combined PEM override for cockpit-tls
+#   - halos_ca_publish_public <src_crt> <public_dir>
+#                                              copy active CA into a public-bindmount target
 #
 # Generated certs carry the extensions browsers + OS trust stores require:
 #   CA   — basicConstraints CA:TRUE (so importing as trust anchor actually works),
@@ -569,6 +571,89 @@ halos_cockpit_install_leaf() {
     if ! mv "$out_new" "$out_path"; then
         rm -f "$out_new"
         echo "halos_cockpit_install_leaf: failed to mv $out_new to $out_path; previous override (if any) is preserved" >&2
+        return 1
+    fi
+}
+
+# halos_ca_publish_public <src_crt> <public_dir>
+# Atomically refresh a world-readable copy of <src_crt> at
+# <public_dir>/halos-ca.crt, mode 0644. Used by prestart to publish the active
+# CA into a bind-mount target the ca-download sidecar serves over HTTP.
+#
+# Why a copy and not a direct mount of the serving-ca.crt symlink:
+#   1. The symlink's absolute target (e.g. /etc/halos/ca/ca.crt when a custom
+#      CA is in use) does not exist inside the sidecar's mount namespace —
+#      Docker resolves the symlink at mount time on the host.
+#   2. The custom-CA directory ALSO holds ca.key. Mounting that directory into
+#      a public-facing sidecar (even read-only) would expose the operator's
+#      private key. We copy only the certificate.
+#
+# Mode 0644 is intentional: this file is a public trust anchor, world-readable
+# is correct.
+#
+# Failure semantics: on any failure leaves the pre-existing public copy (if
+# any) untouched, removes the .new sibling, returns non-zero.
+#
+# Return codes:
+#   0 — success
+#   1 — runtime failure (missing source, write/chmod/mv error, parse fail)
+#   2 — caller bug (missing args)
+halos_ca_publish_public() {
+    local src_crt="$1" public_dir="$2"
+    if [ -z "$src_crt" ] || [ -z "$public_dir" ]; then
+        echo "halos_ca_publish_public: <src_crt> <public_dir> both required" >&2
+        return 2
+    fi
+    if [ ! -f "$src_crt" ]; then
+        echo "halos_ca_publish_public: source cert missing: $src_crt" >&2
+        return 1
+    fi
+
+    if ! mkdir -p "$public_dir"; then
+        echo "halos_ca_publish_public: failed to mkdir $public_dir" >&2
+        return 1
+    fi
+    # Defense-in-depth: re-tighten the dir mode on every call so an operator
+    # who narrowed it (e.g., debugging) doesn't break the bind-mount.
+    chmod 0755 "$public_dir" 2>/dev/null || true
+
+    local public_file="${public_dir}/halos-ca.crt"
+    # PID-suffixed stage filename so concurrent prestart invocations don't
+    # collide on the same staging path. The mv into public_file is still
+    # atomic per caller.
+    local public_new="${public_file}.new.$$"
+    # rm before cp so `>` inside cp doesn't follow a pre-existing symlink at
+    # the stage path. (cp itself doesn't follow target symlinks by default
+    # for overwrite, but the per-pid name minimizes the surface anyway.)
+    rm -f "$public_new"
+
+    if ! cp "$src_crt" "$public_new"; then
+        rm -f "$public_new"
+        echo "halos_ca_publish_public: failed to cp $src_crt to $public_new" >&2
+        return 1
+    fi
+    # Verify the copy parses as an X.509 cert. Catches truncation, EIO mid-
+    # cp, and the case where src_crt drifted to something that isn't a cert.
+    if ! openssl x509 -in "$public_new" -noout 2>/dev/null; then
+        rm -f "$public_new"
+        echo "halos_ca_publish_public: copied file at $public_new does not parse as an X.509 certificate" >&2
+        return 1
+    fi
+    if ! chmod 0644 "$public_new"; then
+        rm -f "$public_new"
+        echo "halos_ca_publish_public: chmod 0644 failed on $public_new" >&2
+        return 1
+    fi
+    # Refuse to install over a pre-existing directory at public_file (plain
+    # mv would silently move INTO the directory).
+    if [ -d "$public_file" ]; then
+        rm -f "$public_new"
+        echo "halos_ca_publish_public: refusing to install over directory at $public_file" >&2
+        return 1
+    fi
+    if ! mv "$public_new" "$public_file"; then
+        rm -f "$public_new"
+        echo "halos_ca_publish_public: failed to mv $public_new to $public_file; previous copy (if any) is preserved" >&2
         return 1
     fi
 }

@@ -1063,6 +1063,130 @@ test_cockpit_install_leaf_write_failure_with_missing_parent() {
     fi
 }
 
+test_publish_public_happy_path() {
+    # Publishes file at <dir>/halos-ca.crt with mode 0644, matching content.
+    local d="$TMPDIR_ROOT/case_publish_happy"
+    local pub="$d/public"
+    mkdir -p "$d"
+    halos_ca_ensure_auto "$d" || return 1
+    halos_ca_publish_public "$d/ca.crt" "$pub" \
+        || { echo "publish_public returned non-zero"; return 1; }
+    [ -f "$pub/halos-ca.crt" ] || { echo "published file not created"; return 1; }
+    local mode; mode=$(_stat_mode "$pub/halos-ca.crt")
+    assert_eq "$mode" "644" "published file mode must be 0644" || return 1
+    # Content must match the source byte-for-byte.
+    if ! cmp -s "$d/ca.crt" "$pub/halos-ca.crt"; then
+        echo "published file content does not match source"
+        return 1
+    fi
+}
+
+test_publish_public_creates_parent_dir() {
+    # If <public_dir> doesn't exist, helper creates it with mode 0755.
+    local d="$TMPDIR_ROOT/case_publish_mkdir"
+    local pub="$d/no/such/dir/yet"
+    mkdir -p "$d"
+    halos_ca_ensure_auto "$d" || return 1
+    halos_ca_publish_public "$d/ca.crt" "$pub" || return 1
+    [ -d "$pub" ] || { echo "parent dir not created"; return 1; }
+    local mode; mode=$(_stat_mode "$pub")
+    assert_eq "$mode" "755" "public dir mode must be 0755" || return 1
+}
+
+test_publish_public_swap_updates_content() {
+    # Central correctness claim of PR #136: published file tracks the active CA.
+    # Publish CA-A, then re-publish CA-B and confirm the served bytes change.
+    local da="$TMPDIR_ROOT/case_publish_swap_a"
+    local db="$TMPDIR_ROOT/case_publish_swap_b"
+    local pub="$TMPDIR_ROOT/case_publish_swap_pub"
+    halos_ca_ensure_auto "$da" || return 1
+    halos_ca_ensure_auto "$db" || return 1
+    halos_ca_publish_public "$da/ca.crt" "$pub" || return 1
+    local hash_a; hash_a=$(openssl dgst -sha256 "$pub/halos-ca.crt" | awk '{print $NF}')
+    halos_ca_publish_public "$db/ca.crt" "$pub" || return 1
+    local hash_b; hash_b=$(openssl dgst -sha256 "$pub/halos-ca.crt" | awk '{print $NF}')
+    if [ "$hash_a" = "$hash_b" ]; then
+        echo "swap-CA scenario: published content did not change"
+        return 1
+    fi
+    # And the new bytes must match the new source.
+    if ! cmp -s "$db/ca.crt" "$pub/halos-ca.crt"; then
+        echo "swapped published file does not match new source"
+        return 1
+    fi
+}
+
+test_publish_public_missing_args_errors() {
+    halos_ca_publish_public "" "" >/dev/null 2>&1
+    local rc=$?
+    assert_eq "$rc" "2" "missing args must exit 2 (caller bug)" || return 1
+}
+
+test_publish_public_missing_source_errors() {
+    local d="$TMPDIR_ROOT/case_publish_missing_src"
+    mkdir -p "$d"
+    halos_ca_publish_public "$d/nope.crt" "$d/public" >/dev/null 2>&1
+    local rc=$?
+    assert_eq "$rc" "1" "missing source must exit 1 (runtime failure)" || return 1
+    [ ! -f "$d/public/halos-ca.crt" ] || { echo "no output should be written"; return 1; }
+}
+
+test_publish_public_rejects_non_cert_source() {
+    # Source exists but isn't a parseable X.509 cert. Validation step must
+    # catch this and refuse to publish (otherwise the sidecar would serve
+    # garbage bytes with the wrong Content-Type to operators).
+    local d="$TMPDIR_ROOT/case_publish_bad_src"
+    local pub="$d/public"
+    mkdir -p "$d"
+    printf 'not a certificate\n' > "$d/bad.crt"
+    halos_ca_publish_public "$d/bad.crt" "$pub" >/dev/null 2>&1
+    local rc=$?
+    assert_eq "$rc" "1" "non-cert source must exit 1" || return 1
+    [ ! -f "$pub/halos-ca.crt" ] || { echo "no output should be written"; return 1; }
+    ! ls "$pub"/halos-ca.crt.new.* >/dev/null 2>&1 || { echo "no .new debris should remain"; return 1; }
+}
+
+test_publish_public_preserves_existing_on_failure() {
+    # First publish succeeds; second publish (with bad source) must leave the
+    # first file unchanged.
+    local d="$TMPDIR_ROOT/case_publish_preserve"
+    local pub="$d/public"
+    mkdir -p "$d"
+    halos_ca_ensure_auto "$d" || return 1
+    halos_ca_publish_public "$d/ca.crt" "$pub" || return 1
+    local good_hash; good_hash=$(openssl dgst -sha256 "$pub/halos-ca.crt" | awk '{print $NF}')
+    # Bad source — must fail and leave the existing published file intact.
+    printf 'not a certificate\n' > "$d/bad.crt"
+    halos_ca_publish_public "$d/bad.crt" "$pub" >/dev/null 2>&1
+    local rc=$?
+    assert_eq "$rc" "1" "bad source must fail with rc=1" || return 1
+    local after_hash; after_hash=$(openssl dgst -sha256 "$pub/halos-ca.crt" | awk '{print $NF}')
+    assert_eq "$after_hash" "$good_hash" "previous published file must be preserved on failure" || return 1
+}
+
+test_publish_public_refuses_directory_at_output() {
+    # Defense-in-depth: a pre-existing directory at <pub>/halos-ca.crt would
+    # make plain mv silently move .new INTO it. Helper must refuse.
+    local d="$TMPDIR_ROOT/case_publish_dir_at_out"
+    local pub="$d/public"
+    mkdir -p "$d" "$pub/halos-ca.crt"
+    halos_ca_ensure_auto "$d" || return 1
+    halos_ca_publish_public "$d/ca.crt" "$pub" >/dev/null 2>&1
+    local rc=$?
+    assert_eq "$rc" "1" "directory at out_path must exit 1" || return 1
+    [ -d "$pub/halos-ca.crt" ] || { echo "directory must be preserved"; return 1; }
+    ! ls "$pub"/halos-ca.crt.new.* >/dev/null 2>&1 || { echo "no .new debris should remain"; return 1; }
+}
+
+test_publish_public_no_new_debris_on_success() {
+    local d="$TMPDIR_ROOT/case_publish_no_debris"
+    local pub="$d/public"
+    mkdir -p "$d"
+    halos_ca_ensure_auto "$d" || return 1
+    halos_ca_publish_public "$d/ca.crt" "$pub" || return 1
+    ! ls "$pub"/halos-ca.crt.new.* >/dev/null 2>&1 || { echo ".new.<pid> sibling should not remain after success"; return 1; }
+}
+
 # ---------------------------------------------------------------------------
 
 run_test test_ensure_auto_generates_files
@@ -1125,6 +1249,15 @@ run_test test_cockpit_install_leaf_rc1_when_chown_fails_with_group_present
 run_test test_cockpit_install_leaf_refuses_directory_at_out_path
 run_test test_cockpit_install_leaf_no_symlink_follow_on_new
 run_test test_cockpit_install_leaf_write_failure_with_missing_parent
+run_test test_publish_public_happy_path
+run_test test_publish_public_creates_parent_dir
+run_test test_publish_public_swap_updates_content
+run_test test_publish_public_missing_args_errors
+run_test test_publish_public_missing_source_errors
+run_test test_publish_public_rejects_non_cert_source
+run_test test_publish_public_preserves_existing_on_failure
+run_test test_publish_public_refuses_directory_at_output
+run_test test_publish_public_no_new_debris_on_success
 
 echo
 echo "Passed: $PASSES, Failed: $FAILS"
