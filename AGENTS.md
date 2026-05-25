@@ -13,7 +13,7 @@ cd halos
 ./run repos:clone
 ```
 
-See `halos/docs/` for development workflows and guidance.
+See the [halos workspace](https://github.com/halos-org/halos) for development workflows and guidance.
 
 ## About This Project
 
@@ -51,7 +51,10 @@ Individual apps in `apps/` have their own versions in `metadata.yaml`. These are
 - Stable: `v{VERSION}+{N}` (stable channel)
 - N = auto-calculated from existing git tags
 
-**CI Enforcement**: PRs that change app files in `apps/<app>/` must include a bump to the `version` field in `apps/<app>/metadata.yaml`, or CI will fail. Changes outside `apps/` that affect the package also require a VERSION file bump.
+**CI Enforcement**:
+
+- **App-level (per PR)**: PRs that change files in `apps/<app>/` must bump the `version` field in `apps/<app>/metadata.yaml`, or CI will fail.
+- **Repo-level (per release cycle)**: `VERSION` bumps are *per release cycle*, not per PR. Default: do NOT bump `VERSION` in feature PRs — CI auto-increments the `+N` revision in release tags (e.g., `v0.3.2+1`, `+2`, `+3`) between stable releases. Bump `VERSION` only when starting a new release cycle, i.e., when `VERSION` currently matches the latest stable tag and this PR is opening the next cycle. If `VERSION` already differs from the latest stable tag, no further bump is needed regardless of how many package-affecting files this PR touches.
 
 ## What This Repository Contains
 
@@ -150,6 +153,6 @@ the literal hostname they hard-code.
 
 ## Related
 
-- **Parent**: [../AGENTS.md](../AGENTS.md) - Workspace documentation
+- **Workspace**: [halos](https://github.com/halos-org/halos) - Multi-repo development hub
 - **Sibling**: [halos-marine-containers](https://github.com/halos-org/halos-marine-containers) - Marine container store
 - **Tooling**: [container-packaging-tools](https://github.com/halos-org/container-packaging-tools)
