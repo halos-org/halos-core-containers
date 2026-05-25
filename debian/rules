@@ -26,9 +26,19 @@ override_dh_auto_install:
 	install -D -m 644 icon.png \
 		debian/$(PKG_NAME)/usr/share/pixmaps/$(PKG_NAME).png
 
-	# Install assets (preserving directory structure, +x for .sh files)
-	for dir in traefik authelia homarr; do \
-		find assets/$$dir -type f | while read f; do \
+	# Install every assets/<dir>/ tree, preserving directory structure, with
+	# +x on .sh files. The glob (over the previous hardcoded list) makes the
+	# class of bug structurally impossible: any new asset subdir added for a
+	# docker-compose.yml bind-mount ships automatically. We lost ca-download/
+	# for a release cycle when the hardcoded list drifted from compose mounts
+	# — when a bind-mount source is missing, Docker creates an empty directory
+	# at the source path, the bind into the container fails with "not a
+	# directory", and the affected container loops on container-init error.
+	# Single-file assets (configure-container-routing, lib-*.sh, hostnames.conf)
+	# are installed explicitly below and not under assets/<dir>/, so the glob
+	# does not over-capture.
+	for dir in assets/*/; do \
+		find "$$dir" -type f | while read f; do \
 			case "$$f" in \
 				*.sh) install -D -m 755 "$$f" "debian/$(PKG_NAME)$(LIB_DIR)/$$f" ;; \
 				*) install -D -m 644 "$$f" "debian/$(PKG_NAME)$(LIB_DIR)/$$f" ;; \

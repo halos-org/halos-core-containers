@@ -70,7 +70,7 @@ The active CA is published at:
 
     https://<host>/halos-ca.crt
 
-Plain HTTP requests to the same path are redirected to HTTPS (301). The
+Plain HTTP requests to the same path are redirected to HTTPS (308). The
 sidecar that serves the file returns it with:
 
 | Header                | Value                                       |
@@ -131,7 +131,7 @@ ssh halos.local 'sudo cat /var/lib/container-apps/halos-core-containers/data/hal
 curl -skI https://halos.local/halos-ca.crt | grep -iE 'content-(type|disposition)'
 
 # 3. HTTP redirects to HTTPS.
-curl -sI http://halos.local/halos-ca.crt | head -1   # 301 Moved Permanently
+curl -sI http://halos.local/halos-ca.crt | head -1   # 308 Permanent Redirect
 curl -sI http://halos.local/halos-ca.crt | grep -i ^location
 
 # 4. After swapping the active CA (operator drops files in /etc/halos/ca/
