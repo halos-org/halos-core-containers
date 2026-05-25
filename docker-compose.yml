@@ -199,7 +199,13 @@ services:
       # /srv/halos-ca.crt marks the container unhealthy (autoheal then
       # restarts it). A bare /healthz probe stayed healthy while nginx
       # 404'd the cert, which hid breakage from operators.
-      test: ["CMD", "wget", "-q", "--spider", "http://localhost/halos-ca.crt"]
+      #
+      # Connect via 127.0.0.1 (not localhost): nginx:alpine resolves
+      # localhost to ::1 first, and our nginx.conf only `listen 80` on
+      # IPv4. localhost probes get ECONNREFUSED → container stays
+      # unhealthy → Traefik 3.7 filters unhealthy containers from
+      # discovery → endpoint silently unreachable behind a homarr 404.
+      test: ["CMD", "wget", "-q", "--spider", "http://127.0.0.1/halos-ca.crt"]
       interval: 10s
       timeout: 5s
       start_period: 30s
