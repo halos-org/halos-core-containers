@@ -24,6 +24,12 @@ EOF
         mkdir -p "${DATA_DIR}/homarr/configs"
         mkdir -p "${DATA_DIR}/homarr/data"
         mkdir -p "${DATA_DIR}/homarr/icons"
+        # Public CA bind-mount target for the ca-download sidecar.
+        # Matches AUTO_CA_DIR's "${DATA_DIR}/${PKG_NAME}/certs/..." layout.
+        # prestart.sh also ensures this directory; created here so the
+        # docker-compose bind mount has a target on first boot before any
+        # prestart run.
+        mkdir -p "${DATA_DIR}/${PKG_NAME}/certs/public"
 
         # Create routing directories used by other container apps
         mkdir -p /etc/halos/routing.d
