@@ -7,23 +7,55 @@ Operator notes on TLS certificate handling in halos-core-containers.
 All CA selection, leaf signing, public-CA publish, and Cockpit cert sharing
 runs in **`halos-manage-certs.service`** — a oneshot systemd unit ordered
 `Before=halos-core-containers.service`. The script (installed at
-`/usr/lib/halos-core-containers/halos-manage-certs`) is idempotent and runs
-on every container-stack activation, plus periodically via
-`halos-manage-certs.timer` (see issue #140) to catch the
-Apple-825-day-leaf-ceiling renewal case on devices that don't reboot often.
+`/usr/lib/halos-core-containers/halos-manage-certs`) is idempotent and runs:
 
-`prestart.sh` no longer touches certs. To force a cert refresh without
-restarting the full container stack:
+1. At every `halos-core-containers.service` activation (`Requires=` + `After=`,
+   so the container stack will not start if cert provisioning fails).
+2. Periodically via **`halos-manage-certs.timer`** — 15 min after boot, then
+   every 24 h thereafter with a 1 h randomized delay. This catches Apple's
+   825-day leaf-validity ceiling on devices that run uninterrupted for
+   years without a service restart.
+
+`prestart.sh` no longer touches certs. To inspect or force a cert refresh:
 
 ```
-sudo systemctl start halos-manage-certs.service
+systemctl list-timers halos-manage-certs.timer        # when the next fire is due
+systemctl status halos-manage-certs.service           # last-run result
+journalctl -u halos-manage-certs.service -f           # follow logs
+sudo systemctl start halos-manage-certs.service       # force a refresh
 ```
 
 Auxiliary failures (public-CA publish, Cockpit override install) log
 `WARNING` and do not block the unit. A broken operator-supplied custom CA
 in `/etc/halos/ca/` aborts the unit — and therefore blocks
-`halos-core-containers.service` start — because silently falling back to
+`halos-core-containers.service` start, because silently falling back to
 the auto-CA would orphan trust anchors the operator distributed to a fleet.
+
+### Cockpit auto-reload on leaf change
+
+When a timer-driven run actually rotates the leaf AND the cockpit override
+was successfully reinstalled, `halos-manage-certs` calls
+`systemctl reload-or-restart cockpit.socket` so `:9090` picks up the fresh
+leaf immediately instead of waiting for the next natural socket activation.
+The reload is gated on (a) `NEED_LEAF=true` so no-op timer fires don't
+bounce `:9090`, and (b) the override-install actually succeeding so a
+failed install doesn't trigger a pointless reload.
+
+### Disabling the timer
+
+The 24-hour renewal check is safe to skip during a maintenance window or
+debugging session — the cert manager still runs at every container-stack
+activation via the `Requires=` chain from `halos-core-containers.service`,
+so a device that reboots more than once every 60 days renews regardless.
+
+```
+sudo systemctl stop halos-manage-certs.timer       # stop until next boot
+sudo systemctl disable halos-manage-certs.timer    # also disable across boots
+sudo systemctl mask halos-manage-certs.timer       # belt-and-suspenders: forbid manual start
+```
+
+(`mask` is reverted with `systemctl unmask`, then `enable` + `start` if
+you want the timer back on the same boot.)
 
 ## Cockpit :9090 cert sharing
 

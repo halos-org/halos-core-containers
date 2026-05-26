@@ -68,8 +68,17 @@ EOF
             # WantedBy=halos-core-containers.service in [Install], so
             # enabling it drops a wants/ symlink that pulls it in
             # automatically whenever the container stack activates.
+            # halos-manage-certs.timer periodically re-fires the service
+            # so long-running devices renew their leaf before Apple's
+            # 825-day SSL ceiling expires it.
             systemctl enable ${PKG_NAME}.service || true
             systemctl enable halos-manage-certs.service || true
+            systemctl enable halos-manage-certs.timer || true
+            # Start the timer immediately so an upgrade on a long-uptime
+            # device doesn't wait for the next reboot to begin its
+            # 24h-cadence renewal schedule. Safe to call even if the
+            # timer is already running.
+            systemctl start halos-manage-certs.timer || true
         fi
         ;;
 esac
