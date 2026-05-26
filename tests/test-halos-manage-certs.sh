@@ -381,6 +381,66 @@ test_leaf_has_expected_cert_structure() {
     fi
 }
 
+test_cockpit_reload_signal_emitted_on_leaf_change() {
+    # When the leaf is re-signed, the script logs the cockpit-reload signal
+    # line. Production wiring (systemctl reload-or-restart cockpit.socket)
+    # is gated on `/run/systemd/system` existing AND cockpit.socket being
+    # enabled — both absent in the test env — so the actual reload doesn't
+    # fire here. The "Leaf rotated; signaling cockpit.socket to reload..."
+    # log line is the assertable signal that the script TOOK the reload
+    # branch (vs the cockpit dir absent / no leaf change paths).
+    local d
+    d=$(new_scratch reload_signal_on_change)
+    local out
+    out=$(run_script "$d" 2>&1) || { echo "$out"; return 1; }
+    if ! echo "$out" | grep -q "signaling cockpit.socket to reload"; then
+        echo "expected cockpit-reload signal on first-boot leaf signing; got:"
+        echo "$out"
+        return 1
+    fi
+}
+
+test_cockpit_reload_signal_skipped_on_idempotent_rerun() {
+    # The reload signal must NOT fire when the leaf wasn't touched. Without
+    # this gate, a timer firing daily would bounce cockpit.socket every
+    # 24h even when no rotation happened — exactly the no-op-thrash this
+    # PR is meant to avoid.
+    local d
+    d=$(new_scratch reload_signal_idempotent)
+    run_script "$d" >/dev/null
+    local out
+    out=$(run_script "$d" 2>&1) || { echo "$out"; return 1; }
+    if echo "$out" | grep -q "signaling cockpit.socket to reload"; then
+        echo "cockpit-reload signal must NOT fire on idempotent rerun; got:"
+        echo "$out"
+        return 1
+    fi
+    # Sanity: the second run should still produce the "Using existing leaf"
+    # message — confirms the test is actually exercising the no-op path
+    # and not silently failing some other way.
+    if ! echo "$out" | grep -q "Using existing leaf"; then
+        echo "expected 'Using existing leaf' on rerun; got:"
+        echo "$out"
+        return 1
+    fi
+}
+
+test_cockpit_reload_signal_skipped_when_cockpit_dir_absent() {
+    # Belt-and-suspenders: even if the leaf rotates, no reload signal when
+    # cockpit-ws isn't installed. The reload branch is gated on the dir
+    # existing because there's nothing to reload if cockpit isn't here.
+    local d
+    d=$(new_scratch reload_signal_no_cockpit)
+    rm -rf "$d/cockpit-certs"
+    local out
+    out=$(run_script "$d" 2>&1) || { echo "$out"; return 1; }
+    if echo "$out" | grep -q "signaling cockpit.socket to reload"; then
+        echo "cockpit-reload signal must NOT fire when cockpit dir absent; got:"
+        echo "$out"
+        return 1
+    fi
+}
+
 test_fingerprint_guard_exits_when_helper_fails() {
     # Validates the `CA_FINGERPRINT=$(...) || exit 1` guard at the top of
     # the post-CA-select block. Bash `set -e` does NOT abort on command-
@@ -425,6 +485,9 @@ run_test test_broken_custom_ca_aborts_run
 run_test test_valid_custom_ca_takes_precedence_over_auto
 run_test test_leaf_includes_ip_san_when_hostnames_conf_has_ip
 run_test test_leaf_has_expected_cert_structure
+run_test test_cockpit_reload_signal_emitted_on_leaf_change
+run_test test_cockpit_reload_signal_skipped_on_idempotent_rerun
+run_test test_cockpit_reload_signal_skipped_when_cockpit_dir_absent
 run_test test_fingerprint_guard_exits_when_helper_fails
 
 echo

@@ -1,0 +1,22 @@
+[Unit]
+Description=Periodic HaLOS device cert renewal check
+Documentation=https://github.com/halos-org/halos-core-containers/blob/main/docs/CERTS.md
+Requires=halos-manage-certs.service
+
+[Timer]
+# Wait 15 min after boot for the rest of the stack to settle before the
+# first timer-driven run; the boot-time activation via
+# halos-core-containers.service has already provisioned certs by then.
+OnBootSec=15min
+# Re-check every 24h. Well below HALOS_CA_LEAF_RENEW_THRESHOLD_DAYS (60d),
+# so even fortnightly-rebooted devices get multiple chances to renew.
+OnUnitActiveSec=24h
+# Spread fleet-wide hits over a 1h window to avoid synchronized renewal
+# storms.
+RandomizedDelaySec=1h
+# Catch up if the device was off when the timer would have fired.
+Persistent=true
+Unit=halos-manage-certs.service
+
+[Install]
+WantedBy=timers.target

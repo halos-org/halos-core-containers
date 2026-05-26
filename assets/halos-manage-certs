@@ -217,4 +217,29 @@ else
     echo "Skipping Cockpit leaf cert install: ${COCKPIT_WS_CERTS_DIR} does not exist (cockpit-ws not yet installed)"
 fi
 
+# When the timer-driven run rotates the leaf, cockpit-tls keeps the OLD
+# cert in memory until the next cockpit.socket activation. Force a reload
+# so :9090 picks up the fresh leaf immediately. Gated on NEED_LEAF=true
+# so no-op timer fires don't bounce :9090 — the typical case once a
+# device is steady-state.
+#
+# Gated on systemd being available AND cockpit.socket being enabled so the
+# script remains usable from tests / minimal environments where neither
+# exists. The "Leaf rotated; signaling cockpit.socket to reload" log line
+# is the test signal — assertable without depending on a real systemd.
+if [ "${NEED_LEAF}" = true ] && [ -d "${COCKPIT_WS_CERTS_DIR}" ]; then
+    echo "Leaf rotated; signaling cockpit.socket to reload..."
+    if [ -d /run/systemd/system ] && command -v systemctl >/dev/null 2>&1; then
+        if systemctl is-enabled cockpit.socket >/dev/null 2>&1; then
+            if ! systemctl reload-or-restart cockpit.socket; then
+                echo "WARNING: cockpit.socket reload-or-restart failed; :9090 will pick up the new leaf at its next activation." >&2
+            fi
+        else
+            echo "Skipping cockpit.socket reload: cockpit.socket not enabled"
+        fi
+    else
+        echo "Skipping cockpit.socket reload: systemd not running"
+    fi
+fi
+
 echo "HaLOS cert management complete"
