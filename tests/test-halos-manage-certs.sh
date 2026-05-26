@@ -77,6 +77,11 @@ new_scratch() {
 # created when halos-core-containers.service starts. Production wiring:
 # the halos-manage-certs touch branch is gated on the file existing, so
 # tests that exercise the "touch fired" path need this preplaced.
+#
+# The YAML body below is illustrative — halos-manage-certs only calls
+# `touch -c` on this file, never parses it. The body kept in sync with
+# prestart.sh's actual output is documentation, not a contract: a future
+# rewrite that empties the file would not affect any of these tests.
 _seed_traefik_tls_config() {
     cat > "$1/traefik-dynamic/tls-default.yml" <<'EOF'
 tls:
@@ -479,6 +484,7 @@ EOF
         HALOS_LIB_CA="$d/stub-lib-ca.sh" \
         HALOS_CUSTOM_CA_DIR="$d/custom-ca" \
         HALOS_COCKPIT_WS_CERTS_DIR="$d/cockpit-certs" \
+        HALOS_TRAEFIK_DYNAMIC_DIR="$d/traefik-dynamic" \
         HALOS_HOSTNAMES_FILE="$d/hostnames.conf" \
         PACKAGE_NAME="halos-core-containers" \
         CONTAINER_DATA_ROOT="$d/data" \
@@ -561,7 +567,7 @@ test_traefik_reload_touch_fires_on_leaf_change() {
     local out
     out=$(run_script "$d" 2>&1) || { echo "$out"; return 1; }
     if ! echo "$out" | grep -q "touching Traefik dynamic config to reload certs"; then
-        echo "expected Traefik-reload signal on first-boot leaf signing; got:"
+        echo "expected Traefik-reload signal on initial leaf signing with pre-existing dynamic config; got:"
         echo "$out"
         return 1
     fi
@@ -693,6 +699,7 @@ EOF
        HALOS_LIB_CA="$d/stub-lib-ca.sh" \
        HALOS_CUSTOM_CA_DIR="$d/custom-ca" \
        HALOS_COCKPIT_WS_CERTS_DIR="$d/cockpit-certs" \
+       HALOS_TRAEFIK_DYNAMIC_DIR="$d/traefik-dynamic" \
        HALOS_HOSTNAMES_FILE="$d/hostnames.conf" \
        PACKAGE_NAME="halos-core-containers" \
        CONTAINER_DATA_ROOT="$d/data" \

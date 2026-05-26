@@ -74,7 +74,14 @@ DYNAMIC_DIR="/etc/halos/traefik-dynamic.d"
 DYNAMIC_SRC_DIR="${SCRIPT_DIR}/assets/traefik/dynamic"
 mkdir -p "${DYNAMIC_DIR}"
 
-# Generate dynamic TLS configuration
+# Generate dynamic TLS configuration.
+#
+# IMPORTANT: assets/halos-manage-certs hardcodes the filename "tls-default.yml"
+# in TRAEFIK_TLS_CONFIG and touches it on leaf rotation to force Traefik's
+# file-watcher to re-read the cert. Renaming this file requires updating that
+# script as well, or rotation-driven cert reload silently falls into the
+# "Skipping Traefik cert reload" branch and Traefik keeps serving the stale
+# leaf until the next halos-core-containers.service restart.
 TLS_CONFIG_FILE="${DYNAMIC_DIR}/tls-default.yml"
 cat > "${TLS_CONFIG_FILE}" << EOF
 # Default TLS certificate configuration

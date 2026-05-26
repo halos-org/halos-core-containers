@@ -277,7 +277,11 @@ fi
 if [ "${NEED_LEAF}" = true ]; then
     if [ -f "${TRAEFIK_TLS_CONFIG}" ]; then
         echo "Leaf rotated; touching Traefik dynamic config to reload certs at ${TRAEFIK_TLS_CONFIG}..."
-        if ! touch "${TRAEFIK_TLS_CONFIG}"; then
+        # -c (no-create): if the file is removed in the narrow window between
+        # the existence check above and the touch, do NOT create an empty
+        # placeholder Traefik can't parse. The check + -c together make the
+        # path strictly mtime-only.
+        if ! touch -c "${TRAEFIK_TLS_CONFIG}"; then
             echo "WARNING: touch ${TRAEFIK_TLS_CONFIG} failed; Traefik will keep serving the previous leaf until the next halos-core-containers.service restart." >&2
         fi
     else
