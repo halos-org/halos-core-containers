@@ -21,6 +21,7 @@
 #   HALOS_LIB_CA               /usr/lib/<pkg>/lib-ca.sh
 #   HALOS_CUSTOM_CA_DIR        /etc/halos/ca
 #   HALOS_COCKPIT_WS_CERTS_DIR /etc/cockpit/ws-certs.d
+#   HALOS_TRAEFIK_DYNAMIC_DIR  /etc/halos/traefik-dynamic.d
 
 set -e
 
@@ -84,6 +85,8 @@ DOMAIN_FILE="${CERTS_DIR}/.domain"
 PUBLIC_CA_DIR="${CONTAINER_DATA_ROOT}/${PACKAGE_NAME}/certs/public"
 COCKPIT_WS_CERTS_DIR="${HALOS_COCKPIT_WS_CERTS_DIR:-/etc/cockpit/ws-certs.d}"
 COCKPIT_LEAF_OVERRIDE="${COCKPIT_WS_CERTS_DIR}/99-halos.cert"
+TRAEFIK_DYNAMIC_DIR="${HALOS_TRAEFIK_DYNAMIC_DIR:-/etc/halos/traefik-dynamic.d}"
+TRAEFIK_TLS_CONFIG="${TRAEFIK_DYNAMIC_DIR}/tls-default.yml"
 
 mkdir -p "${CERTS_DIR}"
 
@@ -244,6 +247,41 @@ if [ "${NEED_LEAF}" = true ] && [ "${COCKPIT_INSTALL_SUCCEEDED}" = true ]; then
         fi
     else
         echo "Skipping cockpit.socket reload: systemd not running"
+    fi
+fi
+
+# Traefik (:443) reads halos.crt/halos.key via its file-provider dynamic
+# config at ${TRAEFIK_TLS_CONFIG}. Its file watcher fires on changes to
+# the dynamic-config FILE but does NOT watch the referenced cert files,
+# so a fresh leaf on disk is ignored until the YAML is touched. Bump the
+# YAML's mtime to force Traefik to re-evaluate the dynamic config, which
+# re-reads the cert from disk — see traefik/traefik#5495 for the
+# upstream limitation.
+#
+# Why not SIGHUP: PR traefik/traefik#9993 (v3.0.0) intended SIGHUP for
+# file-provider reload, but issue traefik/traefik#11624 reports SIGHUP
+# *kills* Traefik on the v3.x line (confirmed on 3.3.3, unfixed at the
+# time of writing). Touch is the safe path; SIGHUP would silently take
+# the proxy down on every rotation.
+#
+# Gated on NEED_LEAF=true so a no-op timer fire doesn't churn Traefik's
+# config every 24h. On first boot the dynamic-config file doesn't yet
+# exist (halos-manage-certs.service runs Before= halos-core-containers,
+# which is what generates the file via prestart.sh); the missing-file
+# branch logs and skips because Traefik isn't running yet and will load
+# the freshly-signed leaf on its first start.
+#
+# The "Leaf rotated; touching Traefik dynamic config to reload certs"
+# log line is the test signal — assertable without depending on a real
+# Traefik container.
+if [ "${NEED_LEAF}" = true ]; then
+    if [ -f "${TRAEFIK_TLS_CONFIG}" ]; then
+        echo "Leaf rotated; touching Traefik dynamic config to reload certs at ${TRAEFIK_TLS_CONFIG}..."
+        if ! touch "${TRAEFIK_TLS_CONFIG}"; then
+            echo "WARNING: touch ${TRAEFIK_TLS_CONFIG} failed; Traefik will keep serving the previous leaf until the next halos-core-containers.service restart." >&2
+        fi
+    else
+        echo "Skipping Traefik cert reload: ${TRAEFIK_TLS_CONFIG} does not exist (halos-core-containers prestart will generate it on next start)"
     fi
 fi
 
