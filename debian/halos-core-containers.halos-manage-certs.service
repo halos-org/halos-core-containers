@@ -1,0 +1,15 @@
+[Unit]
+Description=Provision and maintain HaLOS device CA + leaf TLS certificate
+Documentation=https://github.com/halos-org/halos-core-containers
+After=local-fs.target
+Before=halos-core-containers.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/lib/halos-core-containers/halos-manage-certs
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=halos-core-containers.service

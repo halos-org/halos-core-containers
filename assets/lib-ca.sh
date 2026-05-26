@@ -2,7 +2,7 @@
 # lib-ca.sh — Shared shell library for HaLOS device-CA + leaf cert management.
 #
 # Sourced by:
-#   - halos-core-containers/prestart.sh
+#   - /usr/lib/halos-core-containers/halos-manage-certs
 #
 # Provides:
 #   - halos_ca_ensure_auto <dir>          generate/refresh auto-CA at <dir>/ca.{crt,key}

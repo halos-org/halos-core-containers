@@ -1,0 +1,216 @@
+#!/bin/bash
+# halos-manage-certs — provision and maintain HaLOS device CA + leaf cert
+#
+# Runs as a systemd oneshot ordered Before=halos-core-containers.service.
+# Also invoked by halos-manage-certs.timer (see #140) for periodic renewal
+# checks against Apple's 825-day leaf-validity ceiling. Idempotent on every
+# invocation:
+#   - reuses an existing healthy auto-CA; rotates on expiry / clock-skew
+#   - re-signs the leaf only when the sentinel mismatches OR the leaf is
+#     within HALOS_CA_LEAF_RENEW_THRESHOLD_DAYS of expiry
+#   - re-publishes the public CA copy unconditionally (cheap, self-heals)
+#   - re-installs the cockpit override unconditionally (cheap, self-heals)
+#
+# Auxiliary failures (public-CA publish, cockpit override install) log WARN
+# and continue. The leaf and its CA are the hard prerequisites for the
+# container stack; everything else is opportunistic.
+#
+# Path-related state can be overridden via env for tests:
+#   HALOS_ETC_DIR              /etc/container-apps/<pkg>
+#   HALOS_LIB_HOSTNAMES        /usr/lib/<pkg>/lib-hostnames.sh
+#   HALOS_LIB_CA               /usr/lib/<pkg>/lib-ca.sh
+#   HALOS_CUSTOM_CA_DIR        /etc/halos/ca
+#   HALOS_COCKPIT_WS_CERTS_DIR /etc/cockpit/ws-certs.d
+
+set -e
+
+PACKAGE_NAME="${PACKAGE_NAME:-halos-core-containers}"
+ETC_DIR="${HALOS_ETC_DIR:-/etc/container-apps/${PACKAGE_NAME}}"
+
+# env.defaults carries CONTAINER_DATA_ROOT and PACKAGE_NAME (the postinst
+# writes both). `set -a` exports newly-assigned vars so lib functions see
+# them without per-assignment export. Tests skip env.defaults by passing
+# CONTAINER_DATA_ROOT directly and pointing HALOS_ETC_DIR at an empty dir.
+set -a
+[ -f "${ETC_DIR}/env.defaults" ] && . "${ETC_DIR}/env.defaults"
+[ -f "${ETC_DIR}/env" ] && . "${ETC_DIR}/env"
+set +a
+
+: "${CONTAINER_DATA_ROOT:=/var/lib/container-apps/${PACKAGE_NAME}}"
+
+LIB_HOSTNAMES="${HALOS_LIB_HOSTNAMES:-/usr/lib/halos-core-containers/lib-hostnames.sh}"
+LIB_CA="${HALOS_LIB_CA:-/usr/lib/halos-core-containers/lib-ca.sh}"
+
+# shellcheck source=assets/lib-hostnames.sh
+. "$LIB_HOSTNAMES"
+# shellcheck source=assets/lib-ca.sh
+. "$LIB_CA"
+
+halos_load_hostnames
+HALOS_DOMAIN="$(halos_canonical_hostname)"
+
+echo "HaLOS cert management — domain: ${HALOS_DOMAIN}"
+
+# TLS Certificate Hierarchy ---------------------------------------------------
+#
+# Per-device CA signs a leaf used by Traefik (:443) and shared into Cockpit
+# (:9090) via a combined-PEM override. Operators can install the CA in their
+# OS trust store so all of the device's HTTPS endpoints validate.
+#
+# Two CA-source modes, picked by halos_ca_select_active:
+#   - custom: operator dropped /etc/halos/ca/ca.{crt,key} and the pair validates
+#   - auto:   no custom present → auto-generated per-device CA
+# The active CA is exposed via the serving-ca.crt symlink so the ca-download
+# sidecar always reads "whichever CA is active right now".
+#
+# Layout:
+#   ${CUSTOM_CA_DIR}/ca.{crt,key}         optional operator-supplied custom CA
+#   ${AUTO_CA_DIR}/ca.{crt,key}           auto-generated device CA (20y)
+#   ${AUTO_CA_DIR}/serving-ca.crt         symlink → active CA cert
+#   ${CERTS_DIR}/halos.{crt,key}          leaf signed by active CA (~824d)
+#   ${CERTS_DIR}/.domain                  sentinel: "<hostname-hash>:<ca-fingerprint>"
+CUSTOM_CA_DIR="${HALOS_CUSTOM_CA_DIR:-/etc/halos/ca}"
+AUTO_CA_DIR="${CONTAINER_DATA_ROOT}/${PACKAGE_NAME}/certs/ca"
+SERVING_CA="${AUTO_CA_DIR}/serving-ca.crt"
+TRAEFIK_DATA="${CONTAINER_DATA_ROOT}/traefik"
+CERTS_DIR="${TRAEFIK_DATA}/certs"
+CERT_FILE="${CERTS_DIR}/halos.crt"
+KEY_FILE="${CERTS_DIR}/halos.key"
+DOMAIN_FILE="${CERTS_DIR}/.domain"
+PUBLIC_CA_DIR="${CONTAINER_DATA_ROOT}/${PACKAGE_NAME}/certs/public"
+COCKPIT_WS_CERTS_DIR="${HALOS_COCKPIT_WS_CERTS_DIR:-/etc/cockpit/ws-certs.d}"
+COCKPIT_LEAF_OVERRIDE="${COCKPIT_WS_CERTS_DIR}/99-halos.cert"
+
+mkdir -p "${CERTS_DIR}"
+
+# Select active CA. Custom (when present + valid) wins; otherwise auto is
+# ensured/rotated. A broken custom CA aborts cert management rather than
+# silently falling back — operators who installed a custom CA can SSH to
+# diagnose, and silent fallback would orphan the trust anchor they
+# distributed.
+halos_ca_select_active "${CUSTOM_CA_DIR}" "${AUTO_CA_DIR}" "${SERVING_CA}"
+CA_CRT="${HALOS_CA_ACTIVE_CRT}"
+CA_KEY="${HALOS_CA_ACTIVE_KEY}"
+echo "Active CA: ${CA_CRT} (mode=${HALOS_CA_ACTIVE_MODE})"
+
+# Publish the active CA's PEM bytes into the public dir the ca-download
+# sidecar bind-mounts. Refreshed unconditionally so the published bytes
+# track whichever CA halos_ca_select_active picked.
+#
+# Auxiliary: failure does NOT abort. The previous public copy (if any) is
+# preserved by the helper; consumers of /halos-ca.crt keep serving the
+# old bytes until the next successful run.
+if ! halos_ca_publish_public "${HALOS_CA_ACTIVE_CRT}" "${PUBLIC_CA_DIR}"; then
+    echo "WARNING: failed to refresh public CA copy at ${PUBLIC_CA_DIR}/halos-ca.crt; the /halos-ca.crt download endpoint may serve stale or no CA until the next successful run." >&2
+fi
+
+# Explicit guard: `set -e` does NOT abort on command-substitution failure
+# in an assignment. Without it, a corrupt CA silently yields CA_FINGERPRINT=""
+# and feeds a malformed sentinel into downstream comparison — an infinite
+# re-sign loop.
+CA_FINGERPRINT=$(halos_ca_fingerprint "${CA_CRT}") || {
+    echo "halos-manage-certs: failed to compute CA fingerprint; cert generation cannot continue" >&2
+    exit 1
+}
+
+HOSTNAMES_HASH="$(halos_hostnames_hash)"
+SENTINEL="$(halos_ca_sentinel_compose "${HOSTNAMES_HASH}" "${CA_FINGERPRINT}")"
+NEED_LEAF=false
+if [ ! -f "${CERT_FILE}" ] || [ ! -f "${KEY_FILE}" ]; then
+    echo "Leaf certificate files not found, generating..."
+    NEED_LEAF=true
+elif [ -f "${DOMAIN_FILE}" ]; then
+    STORED=$(cat "${DOMAIN_FILE}")
+    case "$(halos_ca_sentinel_classify "${STORED}")" in
+        match-shape)
+            if [ "${STORED}" != "${SENTINEL}" ]; then
+                echo "Hostname list or CA changed, re-signing leaf certificate..."
+                NEED_LEAF=true
+            fi
+            ;;
+        legacy)
+            echo "Legacy cert sentinel detected, migrating to combined hostname+CA sentinel..."
+            NEED_LEAF=true
+            ;;
+        unrecognized)
+            echo "Cert sentinel unrecognized or corrupt, regenerating leaf certificate..."
+            NEED_LEAF=true
+            ;;
+    esac
+else
+    echo "Cert tracking file not found, regenerating leaf certificate..."
+    NEED_LEAF=true
+fi
+
+# Time-based renewal gate, independent of sentinel state. Catches the
+# unchanged-config device that would otherwise keep the same leaf until
+# Apple's 825-day ceiling expires it (rejection in Safari, Brave,
+# /usr/bin/curl, every SecTrustEvaluate consumer). Fires when remaining
+# validity drops below HALOS_CA_LEAF_RENEW_THRESHOLD_DAYS — paired with
+# this script's periodic invocation via halos-manage-certs.timer (#140),
+# the leaf rotates without operator action.
+if [ "${NEED_LEAF}" != true ] && halos_ca_leaf_needs_renewal "${CERT_FILE}"; then
+    echo "Leaf within renewal threshold (${HALOS_CA_LEAF_RENEW_THRESHOLD_DAYS}d remaining), re-signing..."
+    NEED_LEAF=true
+fi
+
+if [ "${NEED_LEAF}" = true ]; then
+    # Invalidate the sentinel BEFORE attempting to re-sign. If halos_ca_sign_leaf
+    # partially succeeds (key swapped, cert mv fails) and we exit, the sentinel
+    # is gone — so the next run detects "no sentinel" and retries rather than
+    # seeing stale "everything matches" and silently skipping past a key/cert
+    # mismatch that would break TLS handshakes.
+    rm -f "${DOMAIN_FILE}"
+
+    # Build subjectAltName: DNS: entries followed by IP: entries, each sorted
+    # for deterministic output. Loader-validated values; still quote at use
+    # site (defense-in-depth).
+    SAN_ENTRIES=""
+    while IFS= read -r dns_entry; do
+        [ -z "$dns_entry" ] && continue
+        SAN_ENTRIES="${SAN_ENTRIES}${SAN_ENTRIES:+,}DNS:${dns_entry}"
+    done < <(halos_dns_hostnames | LC_ALL=C sort)
+    if [ "${#HALOS_HOSTNAMES_IPS[@]}" -gt 0 ]; then
+        while IFS= read -r ip_entry; do
+            [ -z "$ip_entry" ] && continue
+            SAN_ENTRIES="${SAN_ENTRIES}${SAN_ENTRIES:+,}IP:${ip_entry}"
+        done < <(printf '%s\n' "${HALOS_HOSTNAMES_IPS[@]}" | LC_ALL=C sort)
+    fi
+
+    echo "Signing TLS leaf certificate (CN=${HALOS_DOMAIN}, SANs=${SAN_ENTRIES})..."
+    halos_ca_sign_leaf \
+        "${CA_CRT}" "${CA_KEY}" \
+        "${CERT_FILE}" "${KEY_FILE}" \
+        "${SAN_ENTRIES}" "${HALOS_DOMAIN}"
+    printf '%s' "${SENTINEL}" > "${DOMAIN_FILE}"
+    echo "Leaf certificate signed successfully"
+else
+    echo "Using existing leaf certificate for ${HALOS_DOMAIN}"
+fi
+
+# Share the leaf with Cockpit (:9090) by installing a combined-PEM override at
+# ${COCKPIT_WS_CERTS_DIR}/99-halos.cert. cockpit-tls picks the lex-last *.cert
+# file at socket activation, so the 99- prefix overrides the upstream
+# 0-self-signed.cert generated by cockpit-certificate-ensure. The upstream
+# cert stays as the safety-net floor — removing 99-halos.cert reverts Cockpit
+# to upstream-generated self-signed without further action. See docs/CERTS.md.
+#
+# Runs UNCONDITIONALLY: cheap (cert+key concat) and self-heals if the
+# override was deleted manually. Skipped (with a log line) when the
+# cockpit-ws dir doesn't exist — the cockpit package is only pulled in via
+# halos-cockpit-config's Recommends, so install-order variance can leave the
+# dir absent for a window.
+if [ -d "${COCKPIT_WS_CERTS_DIR}" ]; then
+    echo "Installing Cockpit leaf cert override at ${COCKPIT_LEAF_OVERRIDE}..."
+    # Tolerate failure: cockpit override is auxiliary. Upstream's
+    # 0-self-signed.cert remains the safety-net floor. Letting a transient
+    # cockpit-install failure abort would mean cert management never
+    # completes successfully, blocking halos-core-containers from starting.
+    if ! halos_cockpit_install_leaf "${CERT_FILE}" "${KEY_FILE}" "${COCKPIT_LEAF_OVERRIDE}"; then
+        echo "WARNING: Cockpit leaf cert install failed; :9090 keeps its previous cert (upstream self-signed if no prior override)." >&2
+    fi
+else
+    echo "Skipping Cockpit leaf cert install: ${COCKPIT_WS_CERTS_DIR} does not exist (cockpit-ws not yet installed)"
+fi
+
+echo "HaLOS cert management complete"
