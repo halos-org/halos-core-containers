@@ -27,9 +27,8 @@ sudo systemctl start halos-manage-certs.service       # force a refresh
 
 Auxiliary failures (public-CA publish, Cockpit override install) log
 `WARNING` and do not block the unit. A broken operator-supplied custom CA
-in `/etc/halos/ca/` aborts the unit — and therefore blocks
-`halos-core-containers.service` start, because silently falling back to
-the auto-CA would orphan trust anchors the operator distributed to a fleet.
+in `/etc/halos/ca/` aborts the unit and therefore blocks
+`halos-core-containers.service` start.
 
 ### Cockpit auto-reload on leaf change
 
@@ -40,6 +39,23 @@ leaf immediately instead of waiting for the next natural socket activation.
 The reload is gated on (a) `NEED_LEAF=true` so no-op timer fires don't
 bounce `:9090`, and (b) the override-install actually succeeding so a
 failed install doesn't trigger a pointless reload.
+
+### Traefik reload on leaf change
+
+After re-signing the leaf, `halos-manage-certs` touches
+`/etc/halos/traefik-dynamic.d/tls-default.yml` (the file `prestart.sh`
+generates with `defaultCertificate.certFile` / `keyFile` pointing at the
+leaf paths). Traefik's file-provider watcher fires on the mtime change
+and re-reads its dynamic config; re-reading the dynamic config causes
+the referenced cert files to be loaded from disk. No container restart,
+no connection drop on `:443`.
+
+The reload is gated on (a) `NEED_LEAF=true` so a no-op timer fire
+doesn't churn Traefik every 24 h, and (b) the dynamic-config file
+already existing (first-boot ordering: `halos-manage-certs.service` runs
+`Before=` `halos-core-containers.service`, so the file is absent on
+initial provisioning and Traefik is not yet running — it picks up the
+freshly-signed leaf on its first start instead).
 
 ### Disabling the timer
 
@@ -204,3 +220,61 @@ diff /tmp/halos-ca.crt /tmp/halos-ca-after.crt   # expect a diff
 #    the catch-all path).
 curl -skI https://halos.local/ | head -1
 ```
+
+## Installing a custom CA
+
+Advanced operators who already maintain an internal CA can have HaLOS sign
+its leaf from that CA instead of the device's auto-generated one. The leaf
+will then chain to a trust anchor the operator already has installed on
+their workstations.
+
+### Drop slot
+
+| Path | Mode | Notes |
+|---|---|---|
+| `/etc/halos/ca/ca.crt` | `0644` | CA certificate, PEM. Must have `CA:TRUE` in `basicConstraints` and `keyCertSign` in `keyUsage`. |
+| `/etc/halos/ca/ca.key` | `0600`, owned by `root` | CA private key, PEM. Must match the public key inside `ca.crt`. |
+
+Both files must be present. The drop slot is checked on every
+`halos-manage-certs.service` run.
+
+### Steps to install
+
+1. Place both files at the paths above with the correct permissions.
+2. Run `sudo systemctl start halos-manage-certs.service`.
+3. Inspect the journal for the loud failure cases below; on success, the
+   active CA mode switches from `auto` to `custom`, the leaf is re-signed,
+   and `/halos-ca.crt` now serves the custom CA's bytes.
+
+```
+sudo systemctl start halos-manage-certs.service
+journalctl -u halos-manage-certs.service -b -n 30
+```
+
+### Validation behaviour
+
+The validator checks `CA:TRUE`, `keyCertSign`, key-matches-cert, and date
+parsing. If any check fails, the service exits non-zero (visible via
+`systemctl status` and `dpkg -l`) and leaves the previous active CA
+unchanged — fix the dropped files and re-run.
+
+Common failure modes:
+
+- `CA:TRUE` missing — most "self-signed cert" tutorials produce non-CA
+  certificates. The CA you drop here must be a real CA, not a leaf.
+- `ca.key` doesn't match `ca.crt` — copy-paste error, wrong file.
+- `ca.crt` already expired or `notBefore` in the future — RTC drift on
+  first boot, or you grabbed an old cert.
+
+### Reverting to the auto-CA
+
+Remove the drop-slot files and re-run the service:
+
+```
+sudo rm /etc/halos/ca/ca.crt /etc/halos/ca/ca.key
+sudo systemctl start halos-manage-certs.service
+```
+
+The auto-CA at `/var/lib/container-apps/halos-core-containers/data/halos-core-containers/certs/ca/ca.crt`
+is preserved across mode switches; reverting just re-points
+`serving-ca.crt` back at it and re-signs the leaf with the auto-CA.
