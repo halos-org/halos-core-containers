@@ -119,8 +119,7 @@ The device runs a small local CA that signs a single leaf used by Traefik
 on `:443` and shared with Cockpit on `:9090`. Operators who install the
 device CA on their workstation once trust both surfaces — and every other
 port the device serves — without per-site click-throughs. Custom CAs are
-supported as a single-device advanced option (do NOT distribute a private
-CA key to a fleet — see the security note in the docs).
+supported as an advanced option.
 
 See [docs/CERTS.md](docs/CERTS.md) for the full cert lifecycle, the
 download endpoint at `/halos-ca.crt`, custom-CA install, and the renewal

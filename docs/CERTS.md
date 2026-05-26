@@ -57,10 +57,6 @@ already existing (first-boot ordering: `halos-manage-certs.service` runs
 initial provisioning and Traefik is not yet running — it picks up the
 freshly-signed leaf on its first start instead).
 
-The touch uses `touch -c` (no-create) so a vanishingly rare TOCTOU race
-between the `[ -f ]` check and the touch never leaves an empty placeholder
-that Traefik would fail to parse.
-
 ### Disabling the timer
 
 The 24-hour renewal check is safe to skip during a maintenance window or
