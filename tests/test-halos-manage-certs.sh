@@ -441,6 +441,90 @@ test_cockpit_reload_signal_skipped_when_cockpit_dir_absent() {
     fi
 }
 
+test_cockpit_reload_signal_skipped_when_install_fails() {
+    # If halos_cockpit_install_leaf fails, the override file wasn't
+    # written, so firing a cockpit.socket reload is pointless (cockpit-tls
+    # would just re-read the stale/missing override). Verifies the
+    # COCKPIT_INSTALL_SUCCEEDED guard prevents the reload from firing
+    # purely because NEED_LEAF=true.
+    local d
+    d=$(new_scratch reload_signal_install_fail)
+    cat > "$d/stub-lib-ca.sh" <<EOF
+. "$LIB_CA"
+halos_cockpit_install_leaf() {
+    echo "stub: simulating cockpit install failure" >&2
+    return 1
+}
+EOF
+    local out
+    out=$(HALOS_ETC_DIR="$d/etc" \
+        HALOS_LIB_HOSTNAMES="$LIB_HOSTNAMES" \
+        HALOS_LIB_CA="$d/stub-lib-ca.sh" \
+        HALOS_CUSTOM_CA_DIR="$d/custom-ca" \
+        HALOS_COCKPIT_WS_CERTS_DIR="$d/cockpit-certs" \
+        HALOS_HOSTNAMES_FILE="$d/hostnames.conf" \
+        PACKAGE_NAME="halos-core-containers" \
+        CONTAINER_DATA_ROOT="$d/data" \
+        bash "$SCRIPT" 2>&1) || { echo "$out"; return 1; }
+    if echo "$out" | grep -q "signaling cockpit.socket to reload"; then
+        echo "cockpit-reload signal must NOT fire when install fails; got:"
+        echo "$out"
+        return 1
+    fi
+    # Sanity: the WARNING about install failure SHOULD be present.
+    if ! echo "$out" | grep -q "Cockpit leaf cert install failed"; then
+        echo "expected 'Cockpit leaf cert install failed' WARNING in output; got:"
+        echo "$out"
+        return 1
+    fi
+}
+
+test_cockpit_reload_signal_emitted_on_renewal_threshold_resign() {
+    # Companion to test_cockpit_reload_signal_emitted_on_leaf_change
+    # (which covers the first-boot path) and
+    # test_renewal_threshold_triggers_leaf_only_resign (which covers
+    # the renewal-driven re-sign without asserting reload). This test
+    # verifies the renewal-threshold path ALSO trips the reload signal,
+    # guarding against a regression where the reload only fires on
+    # config-change-driven re-signs.
+    local d
+    d=$(new_scratch reload_signal_renewal)
+    run_script "$d" >/dev/null
+    # Synthesize a 30-day leaf + matching sentinel so only the renewal
+    # gate (not the sentinel branch) sets NEED_LEAF=true on the next run.
+    (
+        # shellcheck source=../assets/lib-ca.sh
+        . "$LIB_CA"
+        # shellcheck source=../assets/lib-hostnames.sh
+        . "$LIB_HOSTNAMES"
+        HALOS_HOSTNAMES_FILE="$d/hostnames.conf" halos_load_hostnames
+        halos_ca_sign_leaf \
+            "$(_auto_ca_crt "$d")" "$(_auto_ca_key "$d")" \
+            "$(_cert_file "$d")" "$(_key_file "$d")" \
+            "DNS:fixture.test" "fixture.test" \
+            30
+        ca_fp=$(halos_ca_fingerprint "$(_auto_ca_crt "$d")")
+        hn_hash=$(halos_hostnames_hash)
+        sentinel=$(halos_ca_sentinel_compose "$hn_hash" "$ca_fp")
+        printf '%s' "$sentinel" > "$(_domain_file "$d")"
+    )
+    local out
+    out=$(run_script "$d" 2>&1) || { echo "$out"; return 1; }
+    if ! echo "$out" | grep -q "signaling cockpit.socket to reload"; then
+        echo "expected cockpit-reload signal on renewal-threshold re-sign; got:"
+        echo "$out"
+        return 1
+    fi
+    # Sanity: confirm the renewal-threshold branch is what triggered it
+    # (not, e.g., a sentinel mismatch that would also produce the signal
+    # but via a different path the test isn't meant to exercise).
+    if ! echo "$out" | grep -q "within renewal threshold"; then
+        echo "expected 'within renewal threshold' log line (renewal-gate branch); got:"
+        echo "$out"
+        return 1
+    fi
+}
+
 test_fingerprint_guard_exits_when_helper_fails() {
     # Validates the `CA_FINGERPRINT=$(...) || exit 1` guard at the top of
     # the post-CA-select block. Bash `set -e` does NOT abort on command-
@@ -488,6 +572,8 @@ run_test test_leaf_has_expected_cert_structure
 run_test test_cockpit_reload_signal_emitted_on_leaf_change
 run_test test_cockpit_reload_signal_skipped_on_idempotent_rerun
 run_test test_cockpit_reload_signal_skipped_when_cockpit_dir_absent
+run_test test_cockpit_reload_signal_skipped_when_install_fails
+run_test test_cockpit_reload_signal_emitted_on_renewal_threshold_resign
 run_test test_fingerprint_guard_exits_when_helper_fails
 
 echo

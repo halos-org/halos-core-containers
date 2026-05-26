@@ -33,11 +33,29 @@ the auto-CA would orphan trust anchors the operator distributed to a fleet.
 
 ### Cockpit auto-reload on leaf change
 
-When a timer-driven run actually rotates the leaf, `halos-manage-certs`
-calls `systemctl reload-or-restart cockpit.socket` so `:9090` picks up the
-fresh leaf immediately instead of waiting for the next socket activation.
-The reload is gated on `NEED_LEAF=true` — no-op timer fires (the typical
-case once a device is steady-state) do not bounce `:9090`.
+When a timer-driven run actually rotates the leaf AND the cockpit override
+was successfully reinstalled, `halos-manage-certs` calls
+`systemctl reload-or-restart cockpit.socket` so `:9090` picks up the fresh
+leaf immediately instead of waiting for the next natural socket activation.
+The reload is gated on (a) `NEED_LEAF=true` so no-op timer fires don't
+bounce `:9090`, and (b) the override-install actually succeeding so a
+failed install doesn't trigger a pointless reload.
+
+### Disabling the timer
+
+The 24-hour renewal check is safe to skip during a maintenance window or
+debugging session — the cert manager still runs at every container-stack
+activation via the `Requires=` chain from `halos-core-containers.service`,
+so a device that reboots more than once every 60 days renews regardless.
+
+```
+sudo systemctl stop halos-manage-certs.timer       # stop until next boot
+sudo systemctl disable halos-manage-certs.timer    # also disable across boots
+sudo systemctl mask halos-manage-certs.timer       # belt-and-suspenders: forbid manual start
+```
+
+(`mask` is reverted with `systemctl unmask`, then `enable` + `start` if
+you want the timer back on the same boot.)
 
 ## Cockpit :9090 cert sharing
 

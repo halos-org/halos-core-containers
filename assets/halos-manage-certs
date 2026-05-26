@@ -204,30 +204,35 @@ fi
 # cockpit-ws dir doesn't exist — the cockpit package is only pulled in via
 # halos-cockpit-config's Recommends, so install-order variance can leave the
 # dir absent for a window.
+COCKPIT_INSTALL_SUCCEEDED=false
 if [ -d "${COCKPIT_WS_CERTS_DIR}" ]; then
     echo "Installing Cockpit leaf cert override at ${COCKPIT_LEAF_OVERRIDE}..."
     # Tolerate failure: cockpit override is auxiliary. Upstream's
     # 0-self-signed.cert remains the safety-net floor. Letting a transient
     # cockpit-install failure abort would mean cert management never
     # completes successfully, blocking halos-core-containers from starting.
-    if ! halos_cockpit_install_leaf "${CERT_FILE}" "${KEY_FILE}" "${COCKPIT_LEAF_OVERRIDE}"; then
+    if halos_cockpit_install_leaf "${CERT_FILE}" "${KEY_FILE}" "${COCKPIT_LEAF_OVERRIDE}"; then
+        COCKPIT_INSTALL_SUCCEEDED=true
+    else
         echo "WARNING: Cockpit leaf cert install failed; :9090 keeps its previous cert (upstream self-signed if no prior override)." >&2
     fi
 else
     echo "Skipping Cockpit leaf cert install: ${COCKPIT_WS_CERTS_DIR} does not exist (cockpit-ws not yet installed)"
 fi
 
-# When the timer-driven run rotates the leaf, cockpit-tls keeps the OLD
-# cert in memory until the next cockpit.socket activation. Force a reload
-# so :9090 picks up the fresh leaf immediately. Gated on NEED_LEAF=true
-# so no-op timer fires don't bounce :9090 — the typical case once a
-# device is steady-state.
+# When the timer-driven run rotates the leaf AND the new override was
+# actually installed, cockpit-tls keeps the OLD cert in memory until the
+# next cockpit.socket activation. Force a reload so :9090 picks up the
+# fresh leaf immediately. Gated on NEED_LEAF=true so no-op timer fires
+# don't bounce :9090, and on COCKPIT_INSTALL_SUCCEEDED so a failed
+# install doesn't trigger a pointless reload (cockpit-tls would just
+# re-read the same stale/missing override).
 #
 # Gated on systemd being available AND cockpit.socket being enabled so the
 # script remains usable from tests / minimal environments where neither
 # exists. The "Leaf rotated; signaling cockpit.socket to reload" log line
 # is the test signal — assertable without depending on a real systemd.
-if [ "${NEED_LEAF}" = true ] && [ -d "${COCKPIT_WS_CERTS_DIR}" ]; then
+if [ "${NEED_LEAF}" = true ] && [ "${COCKPIT_INSTALL_SUCCEEDED}" = true ]; then
     echo "Leaf rotated; signaling cockpit.socket to reload..."
     if [ -d /run/systemd/system ] && command -v systemctl >/dev/null 2>&1; then
         if systemctl is-enabled cockpit.socket >/dev/null 2>&1; then

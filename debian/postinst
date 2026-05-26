@@ -74,6 +74,11 @@ EOF
             systemctl enable ${PKG_NAME}.service || true
             systemctl enable halos-manage-certs.service || true
             systemctl enable halos-manage-certs.timer || true
+            # Start the timer immediately so an upgrade on a long-uptime
+            # device doesn't wait for the next reboot to begin its
+            # 24h-cadence renewal schedule. Safe to call even if the
+            # timer is already running.
+            systemctl start halos-manage-certs.timer || true
         fi
         ;;
 esac
