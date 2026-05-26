@@ -41,6 +41,38 @@ The reload is gated on (a) `NEED_LEAF=true` so no-op timer fires don't
 bounce `:9090`, and (b) the override-install actually succeeding so a
 failed install doesn't trigger a pointless reload.
 
+### Traefik reload on leaf change
+
+After re-signing the leaf, `halos-manage-certs` touches
+`/etc/halos/traefik-dynamic.d/tls-default.yml` (the file `prestart.sh`
+generates with `defaultCertificate.certFile` / `keyFile` pointing at the
+leaf paths). Traefik's file-provider watcher fires on the mtime change
+and re-reads its dynamic config; re-reading the dynamic config causes
+the referenced cert files to be loaded from disk. No container restart,
+no connection drop on `:443`.
+
+The reload is gated on (a) `NEED_LEAF=true` so a no-op timer fire
+doesn't churn Traefik every 24 h, and (b) the dynamic-config file
+already existing (first-boot ordering: `halos-manage-certs.service` runs
+`Before=` `halos-core-containers.service`, so the file is absent on
+initial provisioning and Traefik is not yet running — it picks up the
+freshly-signed leaf on its first start instead).
+
+The touch uses `touch -c` (no-create) so a vanishingly rare TOCTOU race
+between the `[ -f ]` check and the touch never leaves an empty placeholder
+that Traefik would fail to parse.
+
+**Why not `SIGHUP`?** PR
+[`traefik/traefik#9993`](https://github.com/traefik/traefik/pull/9993)
+added SIGHUP file-provider reload in v3.0, but issue
+[`traefik/traefik#11624`](https://github.com/traefik/traefik/issues/11624)
+documents that `SIGHUP` *kills* Traefik on the v3.x line. Sending it on
+every rotation would silently take `:443` down. The touch approach is the
+documented and safe path; see
+[`traefik/traefik#5495`](https://github.com/traefik/traefik/issues/5495)
+for the upstream "cert files referenced by dynamic config are not
+themselves watched" discussion.
+
 ### Disabling the timer
 
 The 24-hour renewal check is safe to skip during a maintenance window or
@@ -204,3 +236,97 @@ diff /tmp/halos-ca.crt /tmp/halos-ca-after.crt   # expect a diff
 #    the catch-all path).
 curl -skI https://halos.local/ | head -1
 ```
+
+## Installing a custom CA
+
+Advanced operators who already maintain an internal CA can have HaLOS sign
+its leaf from that CA instead of the device's auto-generated one. The leaf
+will then chain to a trust anchor the operator already has installed on
+their workstations.
+
+**This is a single-device feature, not a fleet-provisioning pattern.** See
+[Why this is not a fleet pattern](#why-this-is-not-a-fleet-pattern) below
+before proceeding.
+
+### Drop slot
+
+| Path | Mode | Notes |
+|---|---|---|
+| `/etc/halos/ca/ca.crt` | `0644` | CA certificate, PEM. Must have `CA:TRUE` in `basicConstraints` and `keyCertSign` in `keyUsage`. |
+| `/etc/halos/ca/ca.key` | `0600`, owned by `root` | CA private key, PEM. Must match the public key inside `ca.crt`. |
+
+Both files must be present. The drop slot is checked on every
+`halos-manage-certs.service` run.
+
+### Steps to install
+
+1. Place both files at the paths above with the correct permissions.
+2. Run `sudo systemctl start halos-manage-certs.service`.
+3. Inspect the journal for the loud failure cases below; on success, the
+   active CA mode switches from `auto` to `custom`, the leaf is re-signed,
+   and `/halos-ca.crt` now serves the custom CA's bytes.
+
+```
+sudo systemctl start halos-manage-certs.service
+journalctl -u halos-manage-certs.service -b -n 30
+```
+
+### Validation behaviour
+
+The validator checks `CA:TRUE`, `keyCertSign`, key-matches-cert, and date
+parsing. If any check fails, the service exits non-zero (visible via
+`systemctl status` and `dpkg -l`) and leaves the previous active CA
+unchanged. Silent fallback to the auto-CA is **deliberately not done** —
+operators capable of installing a custom CA can SSH to fix it, and silent
+fallback would orphan the trust anchors they distributed.
+
+Common failure modes:
+
+- `CA:TRUE` missing — most "self-signed cert" tutorials produce non-CA
+  certificates. The CA you drop here must be a real CA, not a leaf.
+- `ca.key` doesn't match `ca.crt` — copy-paste error, wrong file.
+- `ca.crt` already expired or `notBefore` in the future — RTC drift on
+  first boot, or you grabbed an old cert.
+
+### Reverting to the auto-CA
+
+Remove the drop-slot files and re-run the service:
+
+```
+sudo rm /etc/halos/ca/ca.crt /etc/halos/ca/ca.key
+sudo systemctl start halos-manage-certs.service
+```
+
+The auto-CA at `/var/lib/container-apps/halos-core-containers/data/halos-core-containers/certs/ca/ca.crt`
+is preserved across mode switches; reverting just re-points
+`serving-ca.crt` back at it and re-signs the leaf with the auto-CA.
+
+### Why this is not a fleet pattern
+
+The drop slot accepts `ca.key`, the CA's *private* key. If you copy the
+same `ca.crt`+`ca.key` onto multiple devices to give your fleet a single
+trust anchor, you have copied the private key onto every edge device. Any
+one of them being compromised — physical theft, escalation through an
+exposed service, a misconfigured `chmod` — burns the entire fleet's trust
+anchor at once. From that point an attacker can mint a leaf for any
+hostname the fleet recognises and use it to impersonate any device.
+
+The supported pattern for fleet-wide trust is:
+
+1. Each device generates its own auto-CA on first boot (default behaviour;
+   do nothing).
+2. Install each device's `ca.crt` on each operator workstation via the
+   per-device download at `https://<host>/halos-ca.crt`. See the
+   [user-guide page on docs.halos.fi](https://docs.halos.fi/user-guide/trust-the-device/).
+3. You distribute *public* certs only; no private keys leave any device.
+
+This scales linearly in trust-store entries on the workstation side, which
+is the correct trade for not having the keys-to-the-kingdom on every edge
+device.
+
+For "we already have a corporate root CA" cases where the leaf actually
+needs to chain to that root, the supported pattern is to run an
+intermediate CA on a separately-managed signing host and drop the
+*intermediate* `ca.crt`+`ca.key` onto a single device. Even then the
+intermediate's key still lives on that device; the corporate root never
+does.
