@@ -72,4 +72,12 @@ override_dh_auto_install:
 override_dh_auto_test:
 	# Skip tests - validated manually
 
-# dh_installsystemd handles service file installation from debian/halos-core-containers.service
+# dh_installsystemd handles service file installation from debian/halos-core-containers.service.
+# Additional unit files (multiple service/timer for the same binary package) require
+# explicit --name= invocations — dh_installsystemd's autodetect only picks up
+# debian/<pkg>.<extension>, NOT debian/<pkg>.<name>.<extension>. Without the
+# --name=halos-manage-certs call below, debian/halos-core-containers.halos-manage-certs.{service,timer}
+# would be present in the source tree but silently absent from the built .deb.
+override_dh_installsystemd:
+	dh_installsystemd
+	dh_installsystemd --name=halos-manage-certs
