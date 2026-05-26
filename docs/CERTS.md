@@ -2,6 +2,29 @@
 
 Operator notes on TLS certificate handling in halos-core-containers.
 
+## Where cert lifecycle lives
+
+All CA selection, leaf signing, public-CA publish, and Cockpit cert sharing
+runs in **`halos-manage-certs.service`** — a oneshot systemd unit ordered
+`Before=halos-core-containers.service`. The script (installed at
+`/usr/lib/halos-core-containers/halos-manage-certs`) is idempotent and runs
+on every container-stack activation, plus periodically via
+`halos-manage-certs.timer` (see issue #140) to catch the
+Apple-825-day-leaf-ceiling renewal case on devices that don't reboot often.
+
+`prestart.sh` no longer touches certs. To force a cert refresh without
+restarting the full container stack:
+
+```
+sudo systemctl start halos-manage-certs.service
+```
+
+Auxiliary failures (public-CA publish, Cockpit override install) log
+`WARNING` and do not block the unit. A broken operator-supplied custom CA
+in `/etc/halos/ca/` aborts the unit — and therefore blocks
+`halos-core-containers.service` start — because silently falling back to
+the auto-CA would orphan trust anchors the operator distributed to a fleet.
+
 ## Cockpit :9090 cert sharing
 
 Cockpit's `:9090` listener serves the same TLS leaf as Traefik, so operators see
@@ -32,10 +55,12 @@ sudo rm /etc/cockpit/ws-certs.d/99-halos.cert
 sudo systemctl restart cockpit
 ```
 
-Note: the next prestart run will re-create `99-halos.cert`. To make the revert
-persistent, you would also need to remove the call site from prestart.sh — but
-that defeats the purpose of the feature. The intended revert path is "remove
-the override, restart cockpit, verify expected behavior" for diagnosis only.
+Note: the next `halos-manage-certs.service` activation (next reboot, next
+`systemctl start halos-manage-certs`, or next timer fire) will re-create
+`99-halos.cert`. To make the revert persistent you would need to disable the
+service or remove the call site from `halos-manage-certs` — but that defeats
+the purpose of the feature. The intended revert path is "remove the
+override, restart cockpit, verify expected behavior" for diagnosis only.
 
 ### Picking up a new cert
 
@@ -110,10 +135,12 @@ verification, all `-sk` results are meaningless on an untrusted network.**
 ### After swapping in a custom CA
 
 When an operator drops a custom CA at `/etc/halos/ca/ca.{crt,key}`, the next
-`halos-core-containers.service` prestart copies the new cert to the public
-location and the URL serves the new bytes. Already-installed copies on
-operator workstations are NOT re-pushed — operators re-download and re-install
-on each machine that needs to trust the new CA.
+`halos-manage-certs.service` activation copies the new cert to the public
+location and the URL serves the new bytes. Triggers: next reboot, next
+`systemctl start halos-manage-certs`, or next timer fire (#140).
+Already-installed copies on operator workstations are NOT re-pushed —
+operators re-download and re-install on each machine that needs to trust
+the new CA.
 
 ### Test commands
 
@@ -135,8 +162,8 @@ curl -sI http://halos.local/halos-ca.crt | head -1   # 308 Permanent Redirect
 curl -sI http://halos.local/halos-ca.crt | grep -i ^location
 
 # 4. After swapping the active CA (operator drops files in /etc/halos/ca/
-#    and restarts halos-core-containers.service), the URL serves the new bytes.
-sudo systemctl restart halos-core-containers.service
+#    and re-runs cert management), the URL serves the new bytes.
+sudo systemctl start halos-manage-certs.service
 sleep 5
 curl -sk https://halos.local/halos-ca.crt -o /tmp/halos-ca-after.crt
 diff /tmp/halos-ca.crt /tmp/halos-ca-after.crt   # expect a diff

@@ -58,6 +58,13 @@ override_dh_auto_install:
 	install -D -m 644 assets/lib-ca.sh \
 		debian/$(PKG_NAME)/usr/lib/$(PKG_NAME)/lib-ca.sh
 
+	# Install cert-management script. Executable but not under /usr/bin —
+	# it's a systemd-invoked helper (halos-manage-certs.service oneshot),
+	# not a general-purpose operator tool. Operators who need a manual
+	# force-refresh invoke it via `systemctl start halos-manage-certs`.
+	install -D -m 755 assets/halos-manage-certs \
+		debian/$(PKG_NAME)/usr/lib/$(PKG_NAME)/halos-manage-certs
+
 	# Install hostnames.conf as a Debian conffile (admin-managed; preserved on upgrade)
 	install -D -m 640 assets/hostnames.conf \
 		debian/$(PKG_NAME)/etc/halos/hostnames.conf

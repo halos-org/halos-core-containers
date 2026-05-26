@@ -3,6 +3,7 @@
 #
 # Sourced by:
 #   - halos-core-containers/prestart.sh
+#   - /usr/lib/halos-core-containers/halos-manage-certs
 #   - /usr/bin/configure-container-routing
 #   - /usr/bin/reload-oidc-clients
 #

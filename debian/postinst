@@ -64,8 +64,12 @@ EOF
             # Reload systemd to recognize new service
             systemctl daemon-reload
 
-            # Enable service
+            # Enable services. halos-manage-certs.service has
+            # WantedBy=halos-core-containers.service in [Install], so
+            # enabling it drops a wants/ symlink that pulls it in
+            # automatically whenever the container stack activates.
             systemctl enable ${PKG_NAME}.service || true
+            systemctl enable halos-manage-certs.service || true
         fi
         ;;
 esac
