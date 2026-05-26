@@ -8,6 +8,7 @@
 #   - halos_ca_ensure_auto <dir>          generate/refresh auto-CA at <dir>/ca.{crt,key}
 #   - halos_ca_fingerprint <crt>          print SHA256 fingerprint (lowercase hex, no colons)
 #   - halos_ca_sign_leaf <ca-crt> <ca-key> <leaf-crt-out> <leaf-key-out> <san> <cn> [days]
+#   - halos_ca_leaf_needs_renewal <leaf-crt>   true when missing/expired/within renew window
 #   - halos_ca_sentinel_compose <hostnames_hash> <ca_fingerprint>
 #   - halos_ca_sentinel_classify <stored>      → match-shape | legacy | unrecognized
 #   - halos_ca_validate_pair <crt> <key>       validate cert/key suitable as device CA
@@ -168,9 +169,11 @@ halos_ca_fingerprint() {
 # _halos_ca_is_healthy <crt_path> [min_remaining_days]
 # Returns 0 if the cert parses, hasn't expired, and has at least
 # <min_remaining_days> of validity left. <min_remaining_days> defaults to
-# HALOS_CA_AUTO_REGEN_THRESHOLD_DAYS for backwards compatibility with the
-# auto-CA call site; consumers checking custom-CA acceptance pass
-# HALOS_CA_CUSTOM_REJECT_THRESHOLD_DAYS explicitly.
+# HALOS_CA_AUTO_REGEN_THRESHOLD_DAYS — the auto-CA regen gate, which is
+# this function's original (and most frequent) call site. Other consumers
+# pass an explicit threshold: custom-CA acceptance uses
+# HALOS_CA_CUSTOM_REJECT_THRESHOLD_DAYS; leaf-renewal checks pass
+# HALOS_CA_LEAF_RENEW_THRESHOLD_DAYS via halos_ca_leaf_needs_renewal.
 _halos_ca_is_healthy() {
     local crt="$1"
     local min_remaining_days="${2:-$HALOS_CA_AUTO_REGEN_THRESHOLD_DAYS}"
@@ -426,6 +429,12 @@ halos_ca_select_active() {
 # SAN format: openssl-compatible list, e.g. "DNS:device.local,DNS:device.lan,IP:10.0.0.5".
 # Writes leaf_key first then leaf_crt (atomic on Linux); Traefik tolerates the
 # brief key-without-matching-cert window better than the inverse.
+#
+# [days] defaults to HALOS_CA_LEAF_VALIDITY_DAYS (824), capped to stay under
+# Apple Secure Transport's 825-day SSL cert ceiling. Callers that need a
+# different validity (tests, future tooling) may pass an explicit value, but
+# anything above 825 will be rejected by macOS/iOS clients regardless of
+# trust-anchor source. See the HALOS_CA_LEAF_VALIDITY_DAYS comment above.
 #
 # Failure semantics: on any openssl error, leaves the pre-existing leaf_crt /
 # leaf_key untouched, cleans up .new files, returns non-zero. The CALLER is

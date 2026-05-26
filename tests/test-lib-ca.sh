@@ -1283,6 +1283,63 @@ test_leaf_needs_renewal_when_well_outside_window_returns_false() {
     assert_eq "$rc" "1" "leaf well outside renewal window must not need renewal" || return 1
 }
 
+test_leaf_needs_renewal_when_already_expired_returns_true() {
+    # Leaf whose notAfter is in the past must report needs-renewal. Covers the
+    # branch where _halos_ca_is_healthy fails because the cert is past its
+    # validity window, distinct from the "approaching expiry" case (which is
+    # still technically valid but inside the renew threshold).
+    local d="$TMPDIR_ROOT/case_leaf_renewal_expired"
+    mkdir -p "$d"
+    local nb na
+    nb=$(date -u -d "@$(( $(date -u +%s) - 7 * 86400 ))" +%Y%m%d%H%M%SZ 2>/dev/null \
+        || date -u -r "$(( $(date -u +%s) - 7 * 86400 ))" +%Y%m%d%H%M%SZ)
+    na=$(date -u -d "@$(( $(date -u +%s) - 86400 ))" +%Y%m%d%H%M%SZ 2>/dev/null \
+        || date -u -r "$(( $(date -u +%s) - 86400 ))" +%Y%m%d%H%M%SZ)
+    openssl req -x509 -nodes -newkey rsa:2048 \
+        -keyout "$d/throwaway.key" -out "$d/expired-leaf.crt" \
+        -not_before "$nb" -not_after "$na" \
+        -subj "/CN=expired" >/dev/null 2>&1 \
+        || { echo "fixture cert generation failed"; return 1; }
+    halos_ca_leaf_needs_renewal "$d/expired-leaf.crt"
+    local rc=$?
+    assert_eq "$rc" "0" "already-expired leaf must report needs-renewal" || return 1
+}
+
+test_sign_leaf_default_validity_uses_apple_compliant_days() {
+    # Regression guard: a future change to HALOS_CA_LEAF_VALIDITY_DAYS that
+    # crosses Apple's 825-day ceiling must be caught even when callers omit
+    # the explicit 7th argument. Complements
+    # test_sign_leaf_validity_under_apple_825_day_cap, which calls with the
+    # constant directly via the default; this test asserts the default
+    # actually IS the safe value (not coupled to which constant supplies it).
+    local d="$TMPDIR_ROOT/case_leaf_default_validity"
+    mkdir -p "$d"
+    halos_ca_ensure_auto "$d" || return 1
+    halos_ca_sign_leaf \
+        "$d/ca.crt" "$d/ca.key" \
+        "$d/leaf.crt" "$d/leaf.key" \
+        "DNS:device.local" "device.local" \
+        || return 1
+    local not_before not_after nb_epoch na_epoch validity_days
+    not_before=$(openssl x509 -in "$d/leaf.crt" -noout -startdate | cut -d= -f2)
+    not_after=$(openssl x509 -in "$d/leaf.crt" -noout -enddate | cut -d= -f2)
+    nb_epoch=$(_parse_openssl_date "$not_before")
+    na_epoch=$(_parse_openssl_date "$not_after")
+    validity_days=$(( (na_epoch - nb_epoch) / 86400 ))
+    if [ "$validity_days" -gt 825 ]; then
+        echo "Default leaf validity $validity_days days exceeds Apple's 825-day cap"
+        return 1
+    fi
+    # Floor guard: catch an accidental drop to a uselessly short lifetime
+    # (e.g., someone setting the constant to 1 by mistake). 30 days is a
+    # generous lower bound — well below the documented 824 default but
+    # above any value that would be obviously broken.
+    if [ "$validity_days" -lt 30 ]; then
+        echo "Default leaf validity $validity_days days is implausibly short"
+        return 1
+    fi
+}
+
 # ---------------------------------------------------------------------------
 
 run_test test_ensure_auto_generates_files
@@ -1359,6 +1416,8 @@ run_test test_leaf_needs_renewal_when_fresh_returns_false
 run_test test_leaf_needs_renewal_when_missing_returns_true
 run_test test_leaf_needs_renewal_when_approaching_expiry_returns_true
 run_test test_leaf_needs_renewal_when_well_outside_window_returns_false
+run_test test_leaf_needs_renewal_when_already_expired_returns_true
+run_test test_sign_leaf_default_validity_uses_apple_compliant_days
 
 echo
 echo "Passed: $PASSES, Failed: $FAILS"
