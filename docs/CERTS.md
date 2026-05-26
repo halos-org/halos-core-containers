@@ -62,17 +62,6 @@ The touch uses `touch -c` (no-create) so a vanishingly rare TOCTOU race
 between the `[ -f ]` check and the touch never leaves an empty placeholder
 that Traefik would fail to parse.
 
-**Why not `SIGHUP`?** PR
-[`traefik/traefik#9993`](https://github.com/traefik/traefik/pull/9993)
-added SIGHUP file-provider reload in v3.0, but issue
-[`traefik/traefik#11624`](https://github.com/traefik/traefik/issues/11624)
-documents that `SIGHUP` *kills* Traefik on the v3.x line. Sending it on
-every rotation would silently take `:443` down. The touch approach is the
-documented and safe path; see
-[`traefik/traefik#5495`](https://github.com/traefik/traefik/issues/5495)
-for the upstream "cert files referenced by dynamic config are not
-themselves watched" discussion.
-
 ### Disabling the timer
 
 The 24-hour renewal check is safe to skip during a maintenance window or
@@ -276,9 +265,7 @@ journalctl -u halos-manage-certs.service -b -n 30
 The validator checks `CA:TRUE`, `keyCertSign`, key-matches-cert, and date
 parsing. If any check fails, the service exits non-zero (visible via
 `systemctl status` and `dpkg -l`) and leaves the previous active CA
-unchanged. Silent fallback to the auto-CA is **deliberately not done** —
-operators capable of installing a custom CA can SSH to fix it, and silent
-fallback would orphan the trust anchors they distributed.
+unchanged — fix the dropped files and re-run.
 
 Common failure modes:
 
