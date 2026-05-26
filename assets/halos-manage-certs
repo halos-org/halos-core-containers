@@ -27,10 +27,14 @@ set -e
 PACKAGE_NAME="${PACKAGE_NAME:-halos-core-containers}"
 ETC_DIR="${HALOS_ETC_DIR:-/etc/container-apps/${PACKAGE_NAME}}"
 
-# env.defaults carries CONTAINER_DATA_ROOT and PACKAGE_NAME (the postinst
-# writes both). `set -a` exports newly-assigned vars so lib functions see
-# them without per-assignment export. Tests skip env.defaults by passing
-# CONTAINER_DATA_ROOT directly and pointing HALOS_ETC_DIR at an empty dir.
+# env.defaults (written by postinst) is the source of truth for
+# CONTAINER_DATA_ROOT and PACKAGE_NAME in production. `set -a` exports
+# newly-assigned vars so lib functions see them without per-assignment
+# export. Precedence: env.defaults > env > caller-supplied env > the
+# defaults at lines 27 and 41. To override PACKAGE_NAME or
+# CONTAINER_DATA_ROOT in a test, point HALOS_ETC_DIR at a tmpdir with NO
+# env.defaults and set the values in the caller env — otherwise the
+# sourced env.defaults clobbers caller values.
 set -a
 [ -f "${ETC_DIR}/env.defaults" ] && . "${ETC_DIR}/env.defaults"
 [ -f "${ETC_DIR}/env" ] && . "${ETC_DIR}/env"

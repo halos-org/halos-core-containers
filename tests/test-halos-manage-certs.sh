@@ -120,24 +120,29 @@ test_idempotent_rerun_preserves_leaf_and_sentinel() {
     # After a successful first run, re-running with identical state must NOT
     # rotate the leaf or the auto-CA. Verified by inode comparison on
     # ca.crt and halos.crt (mv would change the inode; mtime alone is not
-    # robust on filesystems with second-only granularity).
+    # robust on filesystems with second-only granularity). Sentinel content
+    # checked byte-for-byte so a corrupted .domain file (which would force
+    # a re-sign on the next run) is caught.
     local d
     d=$(new_scratch idempotent)
     run_script "$d" >/dev/null
-    local ca_inode_before leaf_inode_before
+    local ca_inode_before leaf_inode_before sentinel_before
     ca_inode_before=$(stat -c '%i' "$(_auto_ca_crt "$d")" 2>/dev/null \
         || stat -f '%i' "$(_auto_ca_crt "$d")")
     leaf_inode_before=$(stat -c '%i' "$(_cert_file "$d")" 2>/dev/null \
         || stat -f '%i' "$(_cert_file "$d")")
+    sentinel_before=$(cat "$(_domain_file "$d")")
     sleep 1
     run_script "$d" >/dev/null
-    local ca_inode_after leaf_inode_after
+    local ca_inode_after leaf_inode_after sentinel_after
     ca_inode_after=$(stat -c '%i' "$(_auto_ca_crt "$d")" 2>/dev/null \
         || stat -f '%i' "$(_auto_ca_crt "$d")")
     leaf_inode_after=$(stat -c '%i' "$(_cert_file "$d")" 2>/dev/null \
         || stat -f '%i' "$(_cert_file "$d")")
+    sentinel_after=$(cat "$(_domain_file "$d")")
     assert_eq "$ca_inode_after" "$ca_inode_before" "auto-CA must not rotate on idempotent rerun" || return 1
     assert_eq "$leaf_inode_after" "$leaf_inode_before" "leaf must not rotate on idempotent rerun" || return 1
+    assert_eq "$sentinel_after" "$sentinel_before" "sentinel content must be preserved on idempotent rerun" || return 1
 }
 
 test_hostname_change_triggers_leaf_only_resign() {
@@ -285,6 +290,129 @@ test_broken_custom_ca_aborts_run() {
     assert_no_file "$(_cert_file "$d")" "leaf must NOT be signed when custom CA is broken" || return 1
 }
 
+test_valid_custom_ca_takes_precedence_over_auto() {
+    # Happy-path companion to test_broken_custom_ca_aborts_run: when the
+    # operator drops a valid CA at /etc/halos/ca, the script must use it
+    # (mode=custom) and sign the leaf with it — confirming the precedence
+    # branch in halos_ca_select_active isn't only ever exercised on the
+    # failure path.
+    local d
+    d=$(new_scratch valid_custom)
+    (
+        umask 077
+        openssl req -x509 -nodes -newkey rsa:2048 -days 365 \
+            -keyout "$d/custom-ca/ca.key" -out "$d/custom-ca/ca.crt" \
+            -subj "/CN=Test Operator CA" \
+            -addext "basicConstraints=critical,CA:TRUE,pathlen:0" \
+            -addext "keyUsage=critical,keyCertSign,cRLSign" \
+            >/dev/null 2>&1
+    ) || { echo "custom CA fixture creation failed"; return 1; }
+    chmod 0700 "$d/custom-ca"
+    local out
+    out=$(run_script "$d" 2>&1) || { echo "$out"; return 1; }
+    if ! echo "$out" | grep -q "mode=custom"; then
+        echo "expected 'mode=custom' in script output; got:"
+        echo "$out"
+        return 1
+    fi
+    if ! openssl verify -CAfile "$d/custom-ca/ca.crt" "$(_cert_file "$d")" >/dev/null 2>&1; then
+        echo "leaf must verify against the operator-supplied custom CA"
+        return 1
+    fi
+    # Auto-CA must NOT have been written when custom mode is active.
+    assert_no_file "$(_auto_ca_crt "$d")" "auto-CA must not be written when custom CA is active" || return 1
+}
+
+test_leaf_includes_ip_san_when_hostnames_conf_has_ip() {
+    # Exercises the script's IP-SAN branch (which iterates HALOS_HOSTNAMES_IPS
+    # in addition to halos_dns_hostnames). All other tests use DNS-only
+    # configs, so without this case the IP-SAN code is dead in test.
+    local d
+    d=$(new_scratch ip_san)
+    printf '%s\n%s\n' "fixture.test" "10.42.0.1" > "$d/hostnames.conf"
+    run_script "$d" >/dev/null
+    local sans
+    sans=$(openssl x509 -in "$(_cert_file "$d")" -noout -ext subjectAltName 2>&1)
+    if ! echo "$sans" | grep -q "DNS:fixture.test"; then
+        echo "leaf SAN missing DNS:fixture.test; got: $sans"
+        return 1
+    fi
+    if ! echo "$sans" | grep -q "IP Address:10.42.0.1"; then
+        echo "leaf SAN missing IP Address:10.42.0.1; got: $sans"
+        return 1
+    fi
+}
+
+test_leaf_has_expected_cert_structure() {
+    # Content-level structural assertions on the first-boot leaf. Without
+    # these a regression that produced a 0-byte / wrong-CN / wrong-EKU /
+    # over-825-day cert would pass the existence-only checks elsewhere.
+    local d
+    d=$(new_scratch leaf_structure)
+    run_script "$d" >/dev/null
+    local leaf="$(_cert_file "$d")"
+    local subject_cn
+    subject_cn=$(openssl x509 -in "$leaf" -noout -subject -nameopt RFC2253 \
+        | sed -n 's/.*CN=\([^,]*\).*/\1/p')
+    assert_eq "$subject_cn" "fixture.test" "leaf CN must match canonical hostname" || return 1
+    if ! openssl x509 -in "$leaf" -noout -ext subjectAltName 2>&1 | grep -q "DNS:fixture.test"; then
+        echo "leaf SAN must include DNS:fixture.test"
+        return 1
+    fi
+    if ! openssl x509 -in "$leaf" -noout -ext basicConstraints 2>&1 | grep -q "CA:FALSE"; then
+        echo "leaf must have basicConstraints CA:FALSE"
+        return 1
+    fi
+    if ! openssl x509 -in "$leaf" -noout -ext extendedKeyUsage 2>&1 | grep -q "TLS Web Server Authentication"; then
+        echo "leaf must have extendedKeyUsage serverAuth (Chrome requires it)"
+        return 1
+    fi
+    local not_before not_after nb_epoch na_epoch validity_days
+    not_before=$(openssl x509 -in "$leaf" -noout -startdate | cut -d= -f2)
+    not_after=$(openssl x509 -in "$leaf" -noout -enddate | cut -d= -f2)
+    nb_epoch=$(date -u -d "$not_before" +%s 2>/dev/null \
+        || date -u -j -f "%b %d %T %Y %Z" "$not_before" +%s)
+    na_epoch=$(date -u -d "$not_after" +%s 2>/dev/null \
+        || date -u -j -f "%b %d %T %Y %Z" "$not_after" +%s)
+    validity_days=$(( (na_epoch - nb_epoch) / 86400 ))
+    if [ "$validity_days" -gt 825 ]; then
+        echo "leaf validity $validity_days exceeds Apple's 825-day cap"
+        return 1
+    fi
+}
+
+test_fingerprint_guard_exits_when_helper_fails() {
+    # Validates the `CA_FINGERPRINT=$(...) || exit 1` guard at the top of
+    # the post-CA-select block. Bash `set -e` does NOT abort on command-
+    # substitution failure in an assignment, so the explicit guard is
+    # load-bearing — without it, an empty fingerprint would feed a
+    # malformed sentinel into downstream comparison and induce an
+    # infinite re-sign loop. We trigger the failure by stubbing
+    # halos_ca_fingerprint via the HALOS_LIB_CA seam.
+    local d
+    d=$(new_scratch fp_guard)
+    run_script "$d" >/dev/null
+    cat > "$d/stub-lib-ca.sh" <<EOF
+. "$LIB_CA"
+halos_ca_fingerprint() {
+    echo "stub: simulating fingerprint failure" >&2
+    return 1
+}
+EOF
+    if HALOS_ETC_DIR="$d/etc" \
+       HALOS_LIB_HOSTNAMES="$LIB_HOSTNAMES" \
+       HALOS_LIB_CA="$d/stub-lib-ca.sh" \
+       HALOS_CUSTOM_CA_DIR="$d/custom-ca" \
+       HALOS_COCKPIT_WS_CERTS_DIR="$d/cockpit-certs" \
+       HALOS_HOSTNAMES_FILE="$d/hostnames.conf" \
+       PACKAGE_NAME="halos-core-containers" \
+       CONTAINER_DATA_ROOT="$d/data" \
+       bash "$SCRIPT" >/dev/null 2>&1; then
+        echo "script must exit non-zero when halos_ca_fingerprint fails"
+        return 1
+    fi
+}
+
 # ---------------------------------------------------------------------------
 
 run_test test_first_boot_bootstrap_creates_all_artifacts
@@ -294,6 +422,10 @@ run_test test_renewal_threshold_triggers_leaf_only_resign
 run_test test_auto_ca_expired_rotates_ca_and_leaf
 run_test test_cockpit_dir_absent_skips_install_without_failure
 run_test test_broken_custom_ca_aborts_run
+run_test test_valid_custom_ca_takes_precedence_over_auto
+run_test test_leaf_includes_ip_san_when_hostnames_conf_has_ip
+run_test test_leaf_has_expected_cert_structure
+run_test test_fingerprint_guard_exits_when_helper_fails
 
 echo
 echo "Passed: $PASSES, Failed: $FAILS"

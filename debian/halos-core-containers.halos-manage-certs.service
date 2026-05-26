@@ -1,6 +1,6 @@
 [Unit]
 Description=Provision and maintain HaLOS device CA + leaf TLS certificate
-Documentation=https://github.com/halos-org/halos-core-containers
+Documentation=https://github.com/halos-org/halos-core-containers/blob/main/docs/CERTS.md
 After=local-fs.target
 Before=halos-core-containers.service
 

@@ -67,12 +67,7 @@ if [ ! -f "${ACME_FILE}" ]; then
     echo "Created acme.json"
 fi
 
-# TLS leaf + CA artifacts are provisioned by halos-manage-certs.service
-# (oneshot, ordered Before=halos-core-containers.service). That unit owns
-# CA selection, leaf signing, public-CA publish, and the Cockpit cert
-# override. By the time prestart runs, the leaf files referenced by the
-# Traefik dynamic config below (/certs/halos.{crt,key}) already exist on
-# the data root. See docs/CERTS.md and assets/halos-manage-certs.
+# TLS leaf + CA artifacts are provisioned by a separate unit; see docs/CERTS.md.
 
 # Dynamic Configuration Directory
 DYNAMIC_DIR="/etc/halos/traefik-dynamic.d"
