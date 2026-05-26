@@ -68,9 +68,29 @@ run_test() {
 # COCKPIT_WS_CERTS_DIR is created so the cockpit-override branch runs.
 new_scratch() {
     local d="$TMPDIR_ROOT/$1"
-    mkdir -p "$d/data" "$d/etc" "$d/custom-ca" "$d/cockpit-certs"
+    mkdir -p "$d/data" "$d/etc" "$d/custom-ca" "$d/cockpit-certs" "$d/traefik-dynamic"
     printf '%s\n' "fixture.test" > "$d/hostnames.conf"
     printf '%s' "$d"
+}
+
+# Synthesize the Traefik dynamic config file that prestart.sh would have
+# created when halos-core-containers.service starts. Production wiring:
+# the halos-manage-certs touch branch is gated on the file existing, so
+# tests that exercise the "touch fired" path need this preplaced.
+#
+# The YAML body below is illustrative — halos-manage-certs only calls
+# `touch -c` on this file, never parses it. The body kept in sync with
+# prestart.sh's actual output is documentation, not a contract: a future
+# rewrite that empties the file would not affect any of these tests.
+_seed_traefik_tls_config() {
+    cat > "$1/traefik-dynamic/tls-default.yml" <<'EOF'
+tls:
+  stores:
+    default:
+      defaultCertificate:
+        certFile: /certs/halos.crt
+        keyFile: /certs/halos.key
+EOF
 }
 
 # Invoke the script with HALOS_* env overrides pointing at the scratch
@@ -84,6 +104,7 @@ run_script() {
     HALOS_LIB_CA="$LIB_CA" \
     HALOS_CUSTOM_CA_DIR="$d/custom-ca" \
     HALOS_COCKPIT_WS_CERTS_DIR="$d/cockpit-certs" \
+    HALOS_TRAEFIK_DYNAMIC_DIR="$d/traefik-dynamic" \
     HALOS_HOSTNAMES_FILE="$d/hostnames.conf" \
     PACKAGE_NAME="halos-core-containers" \
     CONTAINER_DATA_ROOT="$d/data" \
@@ -98,6 +119,7 @@ _auto_ca_crt() { printf '%s' "$1/data/halos-core-containers/certs/ca/ca.crt"; }
 _auto_ca_key() { printf '%s' "$1/data/halos-core-containers/certs/ca/ca.key"; }
 _public_ca() { printf '%s' "$1/data/halos-core-containers/certs/public/halos-ca.crt"; }
 _cockpit_override() { printf '%s' "$1/cockpit-certs/99-halos.cert"; }
+_traefik_tls_config() { printf '%s' "$1/traefik-dynamic/tls-default.yml"; }
 
 # ---------------------------------------------------------------------------
 
@@ -462,6 +484,7 @@ EOF
         HALOS_LIB_CA="$d/stub-lib-ca.sh" \
         HALOS_CUSTOM_CA_DIR="$d/custom-ca" \
         HALOS_COCKPIT_WS_CERTS_DIR="$d/cockpit-certs" \
+        HALOS_TRAEFIK_DYNAMIC_DIR="$d/traefik-dynamic" \
         HALOS_HOSTNAMES_FILE="$d/hostnames.conf" \
         PACKAGE_NAME="halos-core-containers" \
         CONTAINER_DATA_ROOT="$d/data" \
@@ -525,6 +548,134 @@ test_cockpit_reload_signal_emitted_on_renewal_threshold_resign() {
     fi
 }
 
+test_traefik_reload_touch_fires_on_leaf_change() {
+    # When the leaf is re-signed AND the Traefik dynamic config file
+    # already exists (i.e., halos-core-containers has run prestart.sh
+    # at least once), halos-manage-certs touches the YAML to force
+    # Traefik's file watcher to re-read the cert. The "touching Traefik
+    # dynamic config" log line is the assertable signal; mtime change
+    # is verified via `-nt` against a fixed sentinel (portable across
+    # GNU and BSD `stat`).
+    local d
+    d=$(new_scratch traefik_reload_on_change)
+    _seed_traefik_tls_config "$d"
+    # Backdate the config to "2020-01-01" and place a "2024-01-01"
+    # sentinel between that and "now". A successful touch advances the
+    # config to the wall clock, making config newer than sentinel.
+    touch -t 202001010000 "$(_traefik_tls_config "$d")"
+    touch -t 202401010000 "$d/mtime-sentinel"
+    local out
+    out=$(run_script "$d" 2>&1) || { echo "$out"; return 1; }
+    if ! echo "$out" | grep -q "touching Traefik dynamic config to reload certs"; then
+        echo "expected Traefik-reload signal on initial leaf signing with pre-existing dynamic config; got:"
+        echo "$out"
+        return 1
+    fi
+    if [ ! "$(_traefik_tls_config "$d")" -nt "$d/mtime-sentinel" ]; then
+        echo "expected tls-default.yml mtime to advance past mtime-sentinel after touch"
+        return 1
+    fi
+}
+
+test_traefik_reload_skipped_on_idempotent_rerun() {
+    # The touch must NOT fire when the leaf wasn't rotated. Without
+    # this gate, the timer would re-touch the dynamic config every 24h,
+    # causing pointless reload churn in Traefik.
+    local d
+    d=$(new_scratch traefik_reload_idempotent)
+    _seed_traefik_tls_config "$d"
+    run_script "$d" >/dev/null
+    # Backdate to "2020-01-01" after first run; sentinel at "2024-01-01".
+    # On idempotent rerun the touch must NOT fire, so the config stays
+    # at 2020 and remains older than the sentinel.
+    touch -t 202001010000 "$(_traefik_tls_config "$d")"
+    touch -t 202401010000 "$d/mtime-sentinel"
+    local out
+    out=$(run_script "$d" 2>&1) || { echo "$out"; return 1; }
+    if echo "$out" | grep -q "touching Traefik dynamic config to reload certs"; then
+        echo "Traefik-reload touch must NOT fire on idempotent rerun; got:"
+        echo "$out"
+        return 1
+    fi
+    if [ "$(_traefik_tls_config "$d")" -nt "$d/mtime-sentinel" ]; then
+        echo "tls-default.yml mtime must not advance on idempotent rerun"
+        return 1
+    fi
+}
+
+test_traefik_reload_skipped_when_dynamic_config_absent() {
+    # First-boot path: halos-manage-certs runs Before= halos-core-containers,
+    # so on initial provisioning the dynamic config file doesn't exist yet.
+    # halos-core-containers prestart.sh will create it with the freshly-signed
+    # leaf already on disk, so no reload is needed (Traefik hasn't started).
+    # The script must log a skip line rather than touching a non-existent
+    # file (which would create an empty placeholder Traefik can't parse).
+    local d
+    d=$(new_scratch traefik_reload_no_config)
+    rm -rf "$d/traefik-dynamic"
+    local out
+    out=$(run_script "$d" 2>&1) || { echo "$out"; return 1; }
+    if echo "$out" | grep -q "touching Traefik dynamic config to reload certs"; then
+        echo "Traefik-reload touch must NOT fire when dynamic config absent; got:"
+        echo "$out"
+        return 1
+    fi
+    if ! echo "$out" | grep -q "Skipping Traefik cert reload"; then
+        echo "expected 'Skipping Traefik cert reload' log line on first-boot path; got:"
+        echo "$out"
+        return 1
+    fi
+    if [ -e "$(_traefik_tls_config "$d")" ]; then
+        echo "tls-default.yml must NOT be created by halos-manage-certs (prestart.sh owns that file)"
+        return 1
+    fi
+}
+
+test_traefik_reload_fires_on_renewal_threshold_resign() {
+    # Renewal-driven re-sign path: synthesize a near-expiry leaf with
+    # matching sentinel so only the renewal gate sets NEED_LEAF=true,
+    # confirming the touch is wired to NEED_LEAF (not specifically to
+    # the sentinel-mismatch branch).
+    local d
+    d=$(new_scratch traefik_reload_renewal)
+    _seed_traefik_tls_config "$d"
+    run_script "$d" >/dev/null
+    (
+        # shellcheck source=../assets/lib-ca.sh
+        . "$LIB_CA"
+        # shellcheck source=../assets/lib-hostnames.sh
+        . "$LIB_HOSTNAMES"
+        HALOS_HOSTNAMES_FILE="$d/hostnames.conf" halos_load_hostnames
+        halos_ca_sign_leaf \
+            "$(_auto_ca_crt "$d")" "$(_auto_ca_key "$d")" \
+            "$(_cert_file "$d")" "$(_key_file "$d")" \
+            "DNS:fixture.test" "fixture.test" \
+            30
+        ca_fp=$(halos_ca_fingerprint "$(_auto_ca_crt "$d")")
+        hn_hash=$(halos_hostnames_hash)
+        sentinel=$(halos_ca_sentinel_compose "$hn_hash" "$ca_fp")
+        printf '%s' "$sentinel" > "$(_domain_file "$d")"
+    )
+    touch -t 202001010000 "$(_traefik_tls_config "$d")"
+    touch -t 202401010000 "$d/mtime-sentinel"
+    local out
+    out=$(run_script "$d" 2>&1) || { echo "$out"; return 1; }
+    if ! echo "$out" | grep -q "touching Traefik dynamic config to reload certs"; then
+        echo "expected Traefik-reload signal on renewal-threshold re-sign; got:"
+        echo "$out"
+        return 1
+    fi
+    if ! echo "$out" | grep -q "within renewal threshold"; then
+        echo "expected 'within renewal threshold' log line (renewal-gate branch); got:"
+        echo "$out"
+        return 1
+    fi
+    if [ ! "$(_traefik_tls_config "$d")" -nt "$d/mtime-sentinel" ]; then
+        echo "expected tls-default.yml mtime to advance past mtime-sentinel after renewal-driven touch"
+        return 1
+    fi
+}
+
 test_fingerprint_guard_exits_when_helper_fails() {
     # Validates the `CA_FINGERPRINT=$(...) || exit 1` guard at the top of
     # the post-CA-select block. Bash `set -e` does NOT abort on command-
@@ -548,6 +699,7 @@ EOF
        HALOS_LIB_CA="$d/stub-lib-ca.sh" \
        HALOS_CUSTOM_CA_DIR="$d/custom-ca" \
        HALOS_COCKPIT_WS_CERTS_DIR="$d/cockpit-certs" \
+       HALOS_TRAEFIK_DYNAMIC_DIR="$d/traefik-dynamic" \
        HALOS_HOSTNAMES_FILE="$d/hostnames.conf" \
        PACKAGE_NAME="halos-core-containers" \
        CONTAINER_DATA_ROOT="$d/data" \
@@ -574,6 +726,10 @@ run_test test_cockpit_reload_signal_skipped_on_idempotent_rerun
 run_test test_cockpit_reload_signal_skipped_when_cockpit_dir_absent
 run_test test_cockpit_reload_signal_skipped_when_install_fails
 run_test test_cockpit_reload_signal_emitted_on_renewal_threshold_resign
+run_test test_traefik_reload_touch_fires_on_leaf_change
+run_test test_traefik_reload_skipped_on_idempotent_rerun
+run_test test_traefik_reload_skipped_when_dynamic_config_absent
+run_test test_traefik_reload_fires_on_renewal_threshold_resign
 run_test test_fingerprint_guard_exits_when_helper_fails
 
 echo
