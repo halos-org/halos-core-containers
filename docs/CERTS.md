@@ -27,9 +27,8 @@ sudo systemctl start halos-manage-certs.service       # force a refresh
 
 Auxiliary failures (public-CA publish, Cockpit override install) log
 `WARNING` and do not block the unit. A broken operator-supplied custom CA
-in `/etc/halos/ca/` aborts the unit — and therefore blocks
-`halos-core-containers.service` start, because silently falling back to
-the auto-CA would orphan trust anchors the operator distributed to a fleet.
+in `/etc/halos/ca/` aborts the unit and therefore blocks
+`halos-core-containers.service` start.
 
 ### Cockpit auto-reload on leaf change
 
@@ -233,10 +232,6 @@ its leaf from that CA instead of the device's auto-generated one. The leaf
 will then chain to a trust anchor the operator already has installed on
 their workstations.
 
-**This is a single-device feature, not a fleet-provisioning pattern.** See
-[Why this is not a fleet pattern](#why-this-is-not-a-fleet-pattern) below
-before proceeding.
-
 ### Drop slot
 
 | Path | Mode | Notes |
@@ -287,33 +282,3 @@ sudo systemctl start halos-manage-certs.service
 The auto-CA at `/var/lib/container-apps/halos-core-containers/data/halos-core-containers/certs/ca/ca.crt`
 is preserved across mode switches; reverting just re-points
 `serving-ca.crt` back at it and re-signs the leaf with the auto-CA.
-
-### Why this is not a fleet pattern
-
-The drop slot accepts `ca.key`, the CA's *private* key. If you copy the
-same `ca.crt`+`ca.key` onto multiple devices to give your fleet a single
-trust anchor, you have copied the private key onto every edge device. Any
-one of them being compromised — physical theft, escalation through an
-exposed service, a misconfigured `chmod` — burns the entire fleet's trust
-anchor at once. From that point an attacker can mint a leaf for any
-hostname the fleet recognises and use it to impersonate any device.
-
-The supported pattern for fleet-wide trust is:
-
-1. Each device generates its own auto-CA on first boot (default behaviour;
-   do nothing).
-2. Install each device's `ca.crt` on each operator workstation via the
-   per-device download at `https://<host>/halos-ca.crt`. See the
-   [user-guide page on docs.halos.fi](https://docs.halos.fi/user-guide/trust-the-device/).
-3. You distribute *public* certs only; no private keys leave any device.
-
-This scales linearly in trust-store entries on the workstation side, which
-is the correct trade for not having the keys-to-the-kingdom on every edge
-device.
-
-For "we already have a corporate root CA" cases where the leaf actually
-needs to chain to that root, the supported pattern is to run an
-intermediate CA on a separately-managed signing host and drop the
-*intermediate* `ca.crt`+`ca.key` onto a single device. Even then the
-intermediate's key still lives on that device; the corporate root never
-does.
