@@ -65,8 +65,11 @@ override_dh_auto_install:
 	install -D -m 755 assets/halos-manage-certs \
 		debian/$(PKG_NAME)/usr/lib/$(PKG_NAME)/halos-manage-certs
 
-	# Install hostnames.conf as a Debian conffile (admin-managed; preserved on upgrade)
-	install -D -m 640 assets/hostnames.conf \
+	# Install hostnames.conf as a Debian conffile (admin-managed; preserved on upgrade).
+	# Mode 0644: the file lists hostnames the device answers to, all of which are
+	# also visible in mDNS announcements, TLS cert SANs, and the Authelia/OIDC
+	# configuration — there is no confidentiality to protect.
+	install -D -m 644 assets/hostnames.conf \
 		debian/$(PKG_NAME)/etc/halos/hostnames.conf
 
 override_dh_auto_test:
