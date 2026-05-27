@@ -29,6 +29,8 @@ Core container application definitions for HaLOS. These apps are pre-installed i
 
 **Link issues and PRs:** Always link related GitHub issues in PR descriptions with `Closes #<issue-number>`. When a single tracking issue spans multiple PRs (umbrella issue with implementation units), use `Refs #<issue-number>` on the unit PRs and `Closes #<issue-number>` only on the final unit so the umbrella stays open until the work is genuinely complete.
 
+**Release-notes call-outs.** Some changes invalidate existing Authelia/OIDC sessions or break cached id_tokens in ways that aren't obvious from the diff. When a PR changes canonical-hostname semantics, `hostnames.conf` defaults, or Authelia/OIDC client registration, name the user-visible upgrade consequences under a "Release notes" heading in the PR description so the changelog catches them.
+
 ## Version Management
 
 This repository uses the same versioning system as halos-marine-containers:
