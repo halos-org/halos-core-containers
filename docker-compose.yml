@@ -116,8 +116,13 @@ services:
       - "${HALOS_DOMAIN}:host-gateway"
     environment:
       - SECRET_ENCRYPTION_KEY=${SECRET_ENCRYPTION_KEY}
-      # Tell NextAuth the canonical HTTPS URL (behind Traefik proxy)
-      - NEXTAUTH_URL=https://${HALOS_DOMAIN}
+      # NEXTAUTH_URL is intentionally unset. With trustHost: true in the
+      # Homarr fork's NextAuth config, the request's x-forwarded-host /
+      # x-forwarded-proto determine the base URL per request. Setting
+      # NEXTAUTH_URL forces next-auth's reqWithEnvURL() to override the
+      # inbound Host with this canonical value, breaking multi-hostname
+      # access — every post-login redirect lands on canonical regardless
+      # of the originating host.
       # SECURITY: Disables TLS verification for ALL Node.js HTTPS requests.
       # Required for self-signed Traefik certs. Acceptable for local-only device.
       - NODE_TLS_REJECT_UNAUTHORIZED=0

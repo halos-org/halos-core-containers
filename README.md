@@ -71,11 +71,13 @@ without an extra warning.
 ### Canonical hostname
 
 The first non-IP entry is **canonical**. The OIDC issuer URL (the `iss`
-claim, the discovery endpoint, NextAuth's `NEXTAUTH_URL`) always points
-to the canonical host. OIDC login on a non-canonical hostname briefly
-visits canonical for the Authelia UI, then returns to the originating
-host. The canonical host must be reachable from the user's network for
-OIDC login to succeed.
+claim, the discovery endpoint, `AUTH_OIDC_ISSUER`) always points to the
+canonical host. Every other URL — including Homarr's NextAuth callback
+and post-login redirect — is built per request from `x-forwarded-host`,
+so OIDC login on a non-canonical hostname briefly visits canonical for
+the Authelia UI, then returns to the originating host. The canonical
+host must be reachable from the user's network for OIDC login to
+succeed.
 
 ### Cross-paradigm SSO trade-off
 
