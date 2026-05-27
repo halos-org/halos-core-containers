@@ -5,11 +5,9 @@ on:
     branches: [main]
 
 jobs:
-  test:
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Run tests
-        uses: ./.github/actions/run-tests
+  checks:
+    uses: halos-org/shared-workflows/.github/workflows/pr-checks.yml@main
+    with:
+      # Skip lintian in PR checks - container-packaging-tools ensures compliance.
+      # Lintian runs as a backstop in build-release.yml before publishing.
+      skip-lintian: true
