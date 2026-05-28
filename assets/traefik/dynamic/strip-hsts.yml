@@ -1,0 +1,20 @@
+# Strip HSTS header from backend responses on per-app entrypoints.
+#
+# Some upstream backends (notably Signal K Server's default helmet config)
+# emit `Strict-Transport-Security: max-age=31536000; includeSubDomains` on
+# every response. The HSTS state is keyed by **host** in browsers, so once
+# the user lands on any per-app port (e.g., the 307 from /signalk-server/ to
+# https://<device>.local:4430/) the entire <device>.local origin becomes
+# HSTS-only for a year, with `includeSubDomains` propagating it to every
+# subdomain too.
+#
+# Stripping at the proxy edge prevents the cache from being established in
+# the first place. Wired into every per-app `<app>-secure` router via
+# `configure-container-routing` so it applies to whatever backend ends up
+# behind the port-routed entrypoint, present or future.
+http:
+  middlewares:
+    strip-hsts:
+      headers:
+        customResponseHeaders:
+          Strict-Transport-Security: ""
