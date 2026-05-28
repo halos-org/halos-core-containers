@@ -161,11 +161,9 @@ if [ -d "${DYNAMIC_SRC_DIR}" ]; then
         if [ -f "${src_file}" ]; then
             filename=$(basename "${src_file}")
             dest_file="${DYNAMIC_DIR}/${filename}"
-            if [ ! -f "${dest_file}" ]; then
-                echo "Installing dynamic config: ${filename}"
-                cp "${src_file}" "${dest_file}"
-                chmod 644 "${dest_file}"
-            fi
+            echo "Installing dynamic config: ${filename}"
+            cp "${src_file}" "${dest_file}"
+            chmod 644 "${dest_file}"
         fi
     done
 fi
