@@ -8,13 +8,6 @@
 # HSTS-only for a year, with `includeSubDomains` propagating it to every
 # subdomain too.
 #
-# Under HSTS, any TLS error on the host becomes **non-overridable**:
-# Chromium hides the "Proceed to <device>.local (unsafe)" link and forces
-# the user to type `thisisunsafe` to bypass. That breaks the click-through
-# story we depend on for users who haven't installed the device CA, and
-# the cached state outlives the bug — even after the device stops emitting
-# HSTS, the browser keeps enforcing it for the full max-age window.
-#
 # Stripping at the proxy edge prevents the cache from being established in
 # the first place. Wired into every per-app `<app>-secure` router via
 # `configure-container-routing` so it applies to whatever backend ends up
