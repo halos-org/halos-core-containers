@@ -4,12 +4,12 @@
 # emit `Strict-Transport-Security: max-age=31536000; includeSubDomains` on
 # every response. The HSTS state is keyed by **host** in browsers, so once
 # the user lands on any per-app port (e.g., the 307 from /signalk-server/ to
-# https://halosdev.local:4430/) the entire halosdev.local origin becomes
+# https://<device>.local:4430/) the entire <device>.local origin becomes
 # HSTS-only for a year, with `includeSubDomains` propagating it to every
 # subdomain too.
 #
 # Under HSTS, any TLS error on the host becomes **non-overridable**:
-# Chromium hides the "Proceed to halosdev.local (unsafe)" link and forces
+# Chromium hides the "Proceed to <device>.local (unsafe)" link and forces
 # the user to type `thisisunsafe` to bypass. That breaks the click-through
 # story we depend on for users who haven't installed the device CA, and
 # the cached state outlives the bug — even after the device stops emitting

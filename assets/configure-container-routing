@@ -276,7 +276,7 @@ generate_override() {
 
     # Determine middleware chain. strip-hsts is always included to neutralize
     # backends that emit Strict-Transport-Security (e.g., Signal K Server's
-    # default helmet config). Once a browser caches HSTS for halosdev.local,
+    # default helmet config). Once a browser caches HSTS for <device>.local,
     # every cert error on that host becomes non-overridable — no "Proceed"
     # link, only the `thisisunsafe` keystroke. Stripping at the proxy edge
     # keeps .local devices usable with click-through certs.
@@ -284,9 +284,9 @@ generate_override() {
     if [ "${auth_mode}" = "forward_auth" ]; then
         if has_custom_headers "$routing_file"; then
             generate_middleware "${app_id}" "$routing_file"
-            mw_chain="strip-hsts@file,authelia-${app_id}@file"
+            mw_chain="${mw_chain},authelia-${app_id}@file"
         else
-            mw_chain="strip-hsts@file,authelia@file"
+            mw_chain="${mw_chain},authelia@file"
         fi
     fi
     local middleware_label="      traefik.http.routers.${app_id}-secure.middlewares: \"${mw_chain}\""
