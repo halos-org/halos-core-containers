@@ -274,16 +274,22 @@ generate_override() {
     local entrypoint="app-${external_port}"
     log "Processing ${app_id}: entrypoint=${entrypoint}, backend_port=${port}, auth=${auth_mode}"
 
-    # Determine middleware
-    local middleware_label=""
+    # Determine middleware chain. strip-hsts is always included to neutralize
+    # backends that emit Strict-Transport-Security (e.g., Signal K Server's
+    # default helmet config). Once a browser caches HSTS for halosdev.local,
+    # every cert error on that host becomes non-overridable — no "Proceed"
+    # link, only the `thisisunsafe` keystroke. Stripping at the proxy edge
+    # keeps .local devices usable with click-through certs.
+    local mw_chain="strip-hsts@file"
     if [ "${auth_mode}" = "forward_auth" ]; then
         if has_custom_headers "$routing_file"; then
             generate_middleware "${app_id}" "$routing_file"
-            middleware_label="      traefik.http.routers.${app_id}-secure.middlewares: \"authelia-${app_id}@file\""
+            mw_chain="strip-hsts@file,authelia-${app_id}@file"
         else
-            middleware_label="      traefik.http.routers.${app_id}-secure.middlewares: \"authelia@file\""
+            mw_chain="strip-hsts@file,authelia@file"
         fi
     fi
+    local middleware_label="      traefik.http.routers.${app_id}-secure.middlewares: \"${mw_chain}\""
 
     # Determine backend configuration
     local scheme="${backend_scheme:-http}"
