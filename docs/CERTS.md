@@ -278,3 +278,44 @@ sudo systemctl start halos-manage-certs.service
 The auto-CA at `/var/lib/container-apps/halos-core-containers/data/halos-core-containers/certs/ca/ca.crt`
 is preserved across mode switches; reverting just re-points
 `serving-ca.crt` back at it and re-signs the leaf with the auto-CA.
+
+## Same-origin asset serving on :443 (cert-exception friction)
+
+Until a device's CA is installed, every TLS surface the user touches needs a
+manual cert exception. Browsers key those exceptions by **`(host, port)`**
+(Chromium also folds in the leaf fingerprint; Safari is per-`(host, port)`
+even against the prior self-signed default). So each distinct port a user is
+sent to costs one more click-through, and multi-hostname access
+(`<host>.local` *and* the DHCP-domain FQDN) multiplies the count again.
+
+This bites the Homarr dashboard. Each Signal K plugin card renders an icon
+via a path-only URL such as
+`/signalk-server/@signalk/app-dock/app-icon.svg`. By default that path
+matches the auto-generated `redirect-signalk-server-https@file` router
+(priority 100, `PathPrefix(/signalk-server/)`) and gets 307-redirected to
+`https://<host>:4430/...` — the per-app port. Crossing from `:443` to
+`:4430` is a new `(host, port)` pair, so the dashboard renders with broken
+icons until the user manually visits `:4430` and clicks through the warning,
+once per app port they ever encounter.
+
+**Fix:** static images are not navigation and don't need origin isolation
+from the dashboard. `assets/traefik/dynamic/signalk-server-icons.yml`
+defines a higher-priority (200) router that catches image extensions under
+`/signalk-server/`, strips the prefix, and proxies them to the Signal K
+backend on `:443` directly. Served same-origin with the dashboard, they're
+covered by the cert exception the user already granted for the dashboard —
+no extra click-through.
+
+**Why only images.** The scope is deliberately narrow (svg, png, ico, jpg,
+jpeg, gif, avif, webp, case-insensitive). HTML, JS, and CSS are excluded: a
+Signal K plugin SPA loaded under a `/signalk-server/...` prefix on the
+dashboard origin would silently break, because webapps assume `/` as their
+root and embed absolute paths. Navigation to a plugin therefore stays on the
+existing redirect-to-`:4430` path so each plugin keeps a clean `/`-rooted
+origin — accepting the one cert exception per app port for *navigation*
+while eliminating it for *icons*. (The proper long-term fix is to install
+the device CA; see the CA download endpoint above. This router only removes
+the friction for the icon case in the meantime.)
+
+The router also wires `strip-hsts@file` so it does not re-introduce the HSTS
+leak the per-app routers were patched to strip.
