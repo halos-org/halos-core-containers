@@ -141,7 +141,11 @@ read its private key.
 
 The active CA is published at:
 
-    https://<host>/halos-ca.crt
+    https://<host>/ca/halos-ca.crt
+
+(Moved 2026-05-28 from the bare `/halos-ca.crt`, which now returns `410 Gone`
+with a `Link: </ca/halos-ca.crt>; rel="canonical"` hint. The `/ca/` prefix is
+shared with the trust-install landing page at `https://<host>/ca/`.)
 
 Plain HTTP requests to the same path are redirected to HTTPS (308). The
 sidecar that serves the file returns it with:
@@ -167,7 +171,7 @@ acceptable paths:
 
 ```sh
 # On your workstation:
-curl -k -o halos-ca.crt https://halos.local/halos-ca.crt
+curl -k -o halos-ca.crt https://halos.local/ca/halos-ca.crt
 openssl x509 -in halos-ca.crt -noout -fingerprint -sha256
 
 # Over SSH to the device:
@@ -198,22 +202,22 @@ chicken-and-egg procedure above):
 
 ```sh
 # 1. The CA is served and matches the on-device serving-ca.crt.
-curl -sk https://halos.local/halos-ca.crt -o /tmp/halos-ca.crt
+curl -sk https://halos.local/ca/halos-ca.crt -o /tmp/halos-ca.crt
 ssh halos.local 'sudo cat /var/lib/container-apps/halos-core-containers/data/halos-core-containers/certs/ca/serving-ca.crt' \
     | diff - /tmp/halos-ca.crt && echo OK
 
 # 2. Headers are correct (Content-Type, Content-Disposition).
-curl -skI https://halos.local/halos-ca.crt | grep -iE 'content-(type|disposition)'
+curl -skI https://halos.local/ca/halos-ca.crt | grep -iE 'content-(type|disposition)'
 
 # 3. HTTP redirects to HTTPS.
-curl -sI http://halos.local/halos-ca.crt | head -1   # 308 Permanent Redirect
-curl -sI http://halos.local/halos-ca.crt | grep -i ^location
+curl -sI http://halos.local/ca/halos-ca.crt | head -1   # 308 Permanent Redirect
+curl -sI http://halos.local/ca/halos-ca.crt | grep -i ^location
 
 # 4. After swapping the active CA (operator drops files in /etc/halos/ca/
 #    and re-runs cert management), the URL serves the new bytes.
 sudo systemctl start halos-manage-certs.service
 sleep 5
-curl -sk https://halos.local/halos-ca.crt -o /tmp/halos-ca-after.crt
+curl -sk https://halos.local/ca/halos-ca.crt -o /tmp/halos-ca-after.crt
 diff /tmp/halos-ca.crt /tmp/halos-ca-after.crt   # expect a diff
 
 # 5. Anything else under the same hostname is unaffected (homarr still wins
@@ -244,7 +248,7 @@ Both files must be present. The drop slot is checked on every
 2. Run `sudo systemctl start halos-manage-certs.service`.
 3. Inspect the journal for the loud failure cases below; on success, the
    active CA mode switches from `auto` to `custom`, the leaf is re-signed,
-   and `/halos-ca.crt` now serves the custom CA's bytes.
+   and `/ca/halos-ca.crt` now serves the custom CA's bytes.
 
 ```
 sudo systemctl start halos-manage-certs.service

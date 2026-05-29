@@ -8,3 +8,6 @@ debian/*.debhelper
 
 # Local git worktrees for parallel work
 .worktrees/
+
+# ca-download endpoint test scratch dirs (cleaned by the test's trap)
+.catest.*
