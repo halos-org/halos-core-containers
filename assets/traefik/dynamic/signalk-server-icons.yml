@@ -1,0 +1,37 @@
+# Serve Signal K Server static icons / images same-origin on :443 instead
+# of redirecting them to the per-app port :4430, so the dashboard's cert
+# exception covers them and the user avoids a per-port click-through.
+# Full rationale (browser cert-exception model, scope trade-offs):
+# docs/CERTS.md → "Same-origin asset serving on :443".
+http:
+  routers:
+    signalk-server-icons-on-443:
+      # Images only (case-insensitive); navigation (HTML/JS/CSS) intentionally
+      # falls through so plugin SPAs keep a `/`-rooted origin. See docs/CERTS.md.
+      rule: 'PathRegexp(`(?i)^/signalk-server/.+\.(svg|png|ico|jpg|jpeg|gif|avif|webp)$`)'
+      entrypoints:
+        - websecure
+      tls: {}
+      # Must beat the auto-generated redirect-signalk-server-https router (100).
+      priority: 200
+      middlewares:
+        - signalk-server-icons-strip-prefix
+        - strip-hsts@file  # don't re-introduce the HSTS leak the per-app routers strip
+      service: signalk-server-icons-backend
+
+  middlewares:
+    signalk-server-icons-strip-prefix:
+      stripPrefix:
+        prefixes:
+          - "/signalk-server"
+
+  services:
+    signalk-server-icons-backend:
+      loadBalancer:
+        servers:
+          # Backend host:port must track the Signal K Server app definition
+          # (halos-marine-containers/apps/signalk-server/metadata.yaml:
+          # `routing.host_port`, currently 3000) — the same target the
+          # auto-generated per-app `:4430` router derives from routing.d.
+          # This file hardcodes it; if the port ever changes, update both.
+          - url: "http://host.docker.internal:3000"
