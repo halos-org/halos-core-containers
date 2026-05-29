@@ -89,8 +89,32 @@ function deploy {
     remote_debs="$remote_debs /tmp/$(basename "$deb")"
   done
 
-  ssh "$target" "sudo apt install -y --allow-downgrades $remote_debs"
-  echo "Deployment complete."
+  # Force-install regardless of version. Local dev builds carry an arbitrary
+  # changelog version (the committed debian/changelog, not VERSION-derived),
+  # and we can't know what version the target already runs — a CI release, a
+  # prerelease, or a prior dev build. apt compares versions, so it would skip
+  # a same-version install or refuse a lower one and silently deploy nothing.
+  # dpkg -i installs the exact .deb unconditionally. Then run apt-get -f
+  # install unconditionally (not only on dpkg failure): dpkg unpacks but
+  # leaves the package unconfigured when a dependency is missing, and -f
+  # install reconciles that; it's a cheap no-op when nothing is broken.
+  #
+  # The stack restart is gated (&&) on -f install succeeding, so we never
+  # bounce the stack onto a half-configured package. Restart is needed
+  # because the package postinst only enables the unit — without it the
+  # running containers keep their old bind-mounted config. The unit's
+  # ExecStop=docker compose down / ExecStart=docker compose up makes a
+  # restart a full recreate, so new compose and configs take effect.
+  # Propagate remote failure rather than always claiming success: the remote
+  # command's exit status reflects apt-get -f install (dependency resolution)
+  # and the restart, so a broken install or a failed start surfaces here
+  # instead of a misleading "complete".
+  if ssh "$target" "sudo dpkg -i $remote_debs; sudo apt-get -f install -y && sudo systemctl restart halos-core-containers.service"; then
+    echo "Deployment complete (package force-installed; stack restarting — containers may take ~30s to settle)."
+  else
+    echo "Deployment FAILED on $target — see the dpkg/apt/systemctl output above." >&2
+    return 1
+  fi
 }
 
 function deploy-build {
