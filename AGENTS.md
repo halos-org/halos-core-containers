@@ -128,8 +128,13 @@ hostname list:
 function whose stdout becomes the resolved domain. Gated on `declare -F`
 so a stray environment export cannot short-circuit production resolution
 or trigger command execution. When honored, the function's output
-(including empty) is authoritative — no fall-through. Tests use this to
-pin empty-domain behavior independently of the host network.
+(including empty) replaces the live-resolution chain (`hostname -d` /
+`nmcli`) — no fall-through to it. The sticky-domain layer still runs on
+top, exactly as it does for the real chain: with persistence enabled an
+injected empty can be backfilled from the persisted domain, and an
+injected (safe) value is persisted. Tests therefore pin empty-domain
+behavior by also controlling persistence — set `HALOS_HOSTNAMES_DOMAIN_STATE`
+empty to disable it, or point it at a scratch state file.
 
 **OIDC client snippet placeholder convention.** App `prestart.sh` scripts
 that drop OIDC client snippets into `/etc/halos/oidc-clients.d/` should

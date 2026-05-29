@@ -44,6 +44,13 @@ EOF
         mkdir -p /etc/halos/traefik-dynamic.d
         mkdir -p /run/halos/routing-labels
 
+        # Sticky-domain state for lib-hostnames.sh. The resolver persists the
+        # last-known-good DHCP domain here so the FQDN cert SAN stays stable
+        # across reboots (see docs/HOSTNAMES.md). Created at install so the
+        # first resolver run can write it even on a read-only-/var-leaning
+        # setup, rather than relying on a best-effort runtime mkdir.
+        mkdir -p /var/lib/halos
+
         # Operator drop slot for a custom device CA. If both ca.crt and
         # ca.key are present and valid, halos_ca_select_active uses them
         # instead of the auto-generated CA. Empty by default; mode 0700

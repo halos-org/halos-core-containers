@@ -38,6 +38,11 @@ _reset_state() {
     unset HALOS_HOSTNAMES_DNS HALOS_HOSTNAMES_IPS
     unset HALOS_HOSTNAMES_CANONICAL HALOS_HOSTNAMES_FALLBACK
     unset HALOS_HOSTNAMES_FALLBACK_REASON
+    # Disable sticky-domain persistence by default (set-but-empty). Tests
+    # that exercise stickiness opt in by pointing this at a tmp state file
+    # after _reset_state. Leaving it set-empty keeps every other test on the
+    # stateless resolution path, deterministic regardless of who runs them.
+    HALOS_HOSTNAMES_DOMAIN_STATE=""
     # shellcheck source=/dev/null
     . "$LIB"
 }
@@ -587,8 +592,167 @@ test_expand_redirect_uri_default_fallback() {
     assert_eq "$out" "https://${short}.local/cb," "fallback should expand to single canonical URI"
 }
 
+# Unit 1b: sticky domain (Bug A — one re-sign per boot) ----------------------
+
+test_sticky_domain_reuses_on_transient_empty() {
+    # Boot 1: DHCP domain resolves → persisted. Boot 2: early-boot live
+    # resolution is empty → the persisted domain is reused instead of
+    # dropping the FQDN. This is the core Bug A fix.
+    local f="$TMPDIR_ROOT/sticky1.conf"
+    local state="$TMPDIR_ROOT/sticky1.state"
+    rm -f "$state"
+    write_conf "$f" '${fqdn}'
+
+    _reset_state "$f"
+    HALOS_HOSTNAMES_DOMAIN_STATE="$state"
+    HALOS_DOMAIN_RESOLVER=_resolver_hal
+    halos_load_hostnames
+    local d1; d1="$(_halos_resolve_domain)"
+
+    _reset_state "$f"
+    HALOS_HOSTNAMES_DOMAIN_STATE="$state"
+    HALOS_DOMAIN_RESOLVER=_resolver_empty
+    halos_load_hostnames
+    local d2; d2="$(_halos_resolve_domain)"
+    unset HALOS_DOMAIN_RESOLVER HALOS_HOSTNAMES_DOMAIN_STATE
+
+    assert_eq "$d1" "hal" "boot 1 resolves and persists hal" || return 1
+    assert_eq "$d2" "hal" "boot 2 reuses persisted hal despite empty live resolution"
+}
+
+test_sticky_domain_genuine_change_overwrites() {
+    # A genuinely different live domain must overwrite the stored value, so
+    # real network/domain changes still produce one legitimate re-sign.
+    local f="$TMPDIR_ROOT/sticky2.conf"
+    local state="$TMPDIR_ROOT/sticky2.state"
+    rm -f "$state"
+    write_conf "$f" '${fqdn}'
+
+    _reset_state "$f"
+    HALOS_HOSTNAMES_DOMAIN_STATE="$state"
+    HALOS_DOMAIN_RESOLVER=_resolver_hal
+    halos_load_hostnames
+    local d1; d1="$(_halos_resolve_domain)"
+
+    _reset_state "$f"
+    HALOS_HOSTNAMES_DOMAIN_STATE="$state"
+    HALOS_DOMAIN_RESOLVER=_resolver_example_com
+    halos_load_hostnames
+    local d2; d2="$(_halos_resolve_domain)"
+    unset HALOS_DOMAIN_RESOLVER HALOS_HOSTNAMES_DOMAIN_STATE
+
+    assert_eq "$d1" "hal" "first live domain is hal" || return 1
+    assert_eq "$d2" "example.com" "a different live domain overwrites the persisted value"
+}
+
+test_sticky_domain_disabled_keeps_stateless_behavior() {
+    # With persistence disabled (set-empty state path), an empty live
+    # resolution must still yield empty — the pre-fix stateless contract.
+    local f="$TMPDIR_ROOT/sticky3.conf"
+    write_conf "$f" '${fqdn}'
+
+    _reset_state "$f"   # leaves HALOS_HOSTNAMES_DOMAIN_STATE=""
+    HALOS_DOMAIN_RESOLVER=_resolver_hal
+    halos_load_hostnames
+    local d1; d1="$(_halos_resolve_domain)"
+
+    _reset_state "$f"
+    HALOS_DOMAIN_RESOLVER=_resolver_empty
+    halos_load_hostnames
+    local d2; d2="$(_halos_resolve_domain)"
+    unset HALOS_DOMAIN_RESOLVER
+
+    assert_eq "$d1" "hal" "stateless: first resolver still returns hal" || return 1
+    assert_eq "$d2" "" "stateless: empty resolver yields empty (no persistence)"
+}
+
+test_sticky_domain_garbage_not_persisted() {
+    # An unsafe live value (shell metacharacters) must never be persisted,
+    # so it can't be replayed into cert SANs on a later boot.
+    local f="$TMPDIR_ROOT/sticky4.conf"
+    local state="$TMPDIR_ROOT/sticky4.state"
+    rm -f "$state"
+    write_conf "$f" '${fqdn}'
+
+    _reset_state "$f"
+    HALOS_HOSTNAMES_DOMAIN_STATE="$state"
+    HALOS_DOMAIN_RESOLVER=_resolver_with_dollar
+    halos_load_hostnames   # primes the cache → triggers the persist attempt
+
+    # Assert the persist-side guard directly: nothing unsafe reached the state
+    # file. Checking d2 alone would also pass if the read-side guard masked a
+    # persisted-garbage regression, so this is the load-bearing assertion.
+    if [ -s "$state" ]; then
+        printf 'garbage was persisted to state file: %q\n' "$(cat "$state")" >&2
+        return 1
+    fi
+
+    _reset_state "$f"
+    HALOS_HOSTNAMES_DOMAIN_STATE="$state"
+    HALOS_DOMAIN_RESOLVER=_resolver_empty
+    halos_load_hostnames
+    local d2; d2="$(_halos_resolve_domain)"
+    unset HALOS_DOMAIN_RESOLVER HALOS_HOSTNAMES_DOMAIN_STATE
+
+    assert_eq "$d2" "" "garbage live value must not be persisted for later reuse"
+}
+
+test_sticky_domain_first_boot_returns_empty() {
+    # Persistence enabled but nothing stored yet (true first boot): an empty
+    # live resolution must yield empty and create no state file — stickiness
+    # must never fabricate a domain out of thin air.
+    local f="$TMPDIR_ROOT/sticky6.conf"
+    local state="$TMPDIR_ROOT/sticky6.state"
+    rm -f "$state"
+    write_conf "$f" '${fqdn}'
+
+    _reset_state "$f"
+    HALOS_HOSTNAMES_DOMAIN_STATE="$state"
+    HALOS_DOMAIN_RESOLVER=_resolver_empty
+    halos_load_hostnames
+    local d; d="$(_halos_resolve_domain)"
+    unset HALOS_DOMAIN_RESOLVER HALOS_HOSTNAMES_DOMAIN_STATE
+
+    assert_eq "$d" "" "first boot with empty store must return empty, not a fabricated domain" || return 1
+    if [ -e "$state" ]; then
+        printf 'no state file should be created when nothing ever resolved\n' >&2
+        return 1
+    fi
+}
+
+test_sticky_fqdn_stable_across_boots() {
+    # Consumer-level outcome: the hostnames hash that drives the cert
+    # sentinel is identical across a domain-resolving boot and a subsequent
+    # empty-resolution boot — so halos-manage-certs does NOT re-sign.
+    local f="$TMPDIR_ROOT/sticky5.conf"
+    local state="$TMPDIR_ROOT/sticky5.state"
+    rm -f "$state"
+    write_conf "$f" '${hostname}.local' '${fqdn}'
+
+    _reset_state "$f"
+    HALOS_HOSTNAMES_DOMAIN_STATE="$state"
+    HALOS_DOMAIN_RESOLVER=_resolver_hal
+    halos_load_hostnames
+    local h1; h1="$(halos_hostnames_hash)"
+
+    _reset_state "$f"
+    HALOS_HOSTNAMES_DOMAIN_STATE="$state"
+    HALOS_DOMAIN_RESOLVER=_resolver_empty
+    halos_load_hostnames
+    local h2; h2="$(halos_hostnames_hash)"
+    unset HALOS_DOMAIN_RESOLVER HALOS_HOSTNAMES_DOMAIN_STATE
+
+    assert_eq "$h1" "$h2" "hostname hash stable across boots → no per-boot re-sign"
+}
+
 # ---------------------------------------------------------------------------
 
+run_test test_sticky_domain_reuses_on_transient_empty
+run_test test_sticky_domain_genuine_change_overwrites
+run_test test_sticky_domain_disabled_keeps_stateless_behavior
+run_test test_sticky_domain_garbage_not_persisted
+run_test test_sticky_domain_first_boot_returns_empty
+run_test test_sticky_fqdn_stable_across_boots
 run_test test_happy_path_dns_and_ip
 run_test test_comments_and_blank_lines_ignored
 run_test test_missing_file_fallback

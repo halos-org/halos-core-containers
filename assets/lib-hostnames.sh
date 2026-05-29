@@ -90,7 +90,14 @@ _halos_domain_safe() {
 # Resolved values are validated by _halos_domain_safe; anything that fails
 # (whitespace, NUL, shell metacharacters, non-DNS characters) is treated
 # as no-domain and the chain falls through.
-# Echoes the empty string when nothing resolves; never errors.
+#
+# Sticky behavior: the last-known-good domain is persisted to
+# $HALOS_HOSTNAMES_DOMAIN_STATE (unset → /var/lib/halos/resolved-domain;
+# set-but-empty → disabled). When the live chain resolves nothing, the
+# persisted value is reused instead of returning empty, so a domain that
+# resolved on an earlier boot stays available while the network settles.
+# All state I/O is best-effort and never fails resolution. Echoes the empty
+# string when nothing resolves and nothing is persisted; never errors.
 #
 # Cached per `halos_load_hostnames` invocation in HALOS_HOSTNAMES_DOMAIN_CACHE.
 # Note: empty-string is a valid cached value (meaning "resolver completed,
@@ -106,47 +113,89 @@ _halos_resolve_domain() {
 
     # 1. Test injection seam — only when it names a defined shell function.
     if [ -n "${HALOS_DOMAIN_RESOLVER:-}" ] && declare -F "$HALOS_DOMAIN_RESOLVER" >/dev/null 2>&1; then
-        d="$("$HALOS_DOMAIN_RESOLVER" 2>/dev/null || true)"
-        d="$(_halos_trim "$d")"
         # Injected resolver output is authoritative (including empty) so
         # tests can pin empty-domain behavior. No domain-shape validation.
-        HALOS_HOSTNAMES_DOMAIN_CACHE="$d"
-        printf '%s' "$d"
-        return 0
-    fi
-
-    # 2. hostname -d (admin-configured).
-    d="$(_halos_trim "$(hostname -d 2>/dev/null || true)")"
-    if [ -n "$d" ] && ! _halos_domain_safe "$d"; then
-        _halos_log "HALOS_HOSTNAMES_SKIP: hostname -d returned unsafe value, ignoring"
-        d=""
-    fi
-
-    # 3. nmcli (DHCP-provided), with timeout so a hung NM can't block prestart.
-    if [ -z "$d" ] && command -v nmcli >/dev/null 2>&1; then
-        local nmcli_cmd
-        if command -v timeout >/dev/null 2>&1; then
-            nmcli_cmd="timeout 2 nmcli"
-        else
-            nmcli_cmd="nmcli"
+        d="$("$HALOS_DOMAIN_RESOLVER" 2>/dev/null || true)"
+        d="$(_halos_trim "$d")"
+    else
+        # 2. hostname -d (admin-configured).
+        d="$(_halos_trim "$(hostname -d 2>/dev/null || true)")"
+        if [ -n "$d" ] && ! _halos_domain_safe "$d"; then
+            _halos_log "HALOS_HOSTNAMES_SKIP: hostname -d returned unsafe value, ignoring"
+            d=""
         fi
-        local line value
-        while IFS= read -r line; do
-            # Format: IP4.DOMAIN[N]:value (terse mode, colon-separated).
-            value="${line#*:}"
-            # nmcli emits "--" for empty fields; skip those.
-            if [ -n "$value" ] && [ "$value" != "--" ]; then
-                value="$(_halos_trim "$value")"
-                if _halos_domain_safe "$value"; then
-                    d="$value"
-                    break
+
+        # 3. nmcli (DHCP-provided), with timeout so a hung NM can't block prestart.
+        if [ -z "$d" ] && command -v nmcli >/dev/null 2>&1; then
+            local nmcli_cmd
+            if command -v timeout >/dev/null 2>&1; then
+                nmcli_cmd="timeout 2 nmcli"
+            else
+                nmcli_cmd="nmcli"
+            fi
+            local line value
+            while IFS= read -r line; do
+                # Format: IP4.DOMAIN[N]:value (terse mode, colon-separated).
+                value="${line#*:}"
+                # nmcli emits "--" for empty fields; skip those.
+                if [ -n "$value" ] && [ "$value" != "--" ]; then
+                    value="$(_halos_trim "$value")"
+                    if _halos_domain_safe "$value"; then
+                        d="$value"
+                        break
+                    fi
+                fi
+            done < <($nmcli_cmd -t -f IP4.DOMAIN device show 2>/dev/null || true)
+        fi
+    fi
+
+    # Downstream consumers (cert SANs, Authelia per-hostname cookies, OIDC
+    # redirect_uris) key off this domain and must see a value that is stable
+    # across reboots — not one that vanishes and returns as the network
+    # settles. The live chain returns nothing during early boot, before
+    # NetworkManager has assigned a DHCP domain, so persist the last-known-good
+    # value and reuse it whenever the live chain is empty: a transient empty
+    # resolution then keeps the previously-resolved domain instead of dropping
+    # it. A genuinely different live domain overwrites the stored value, so
+    # real domain changes still propagate.
+    #
+    # State path: unset → production default; set-empty → disabled (stateless).
+    # All I/O is best-effort — resolution must never fail, because consumers
+    # source this library under set -e.
+    local state_file="${HALOS_HOSTNAMES_DOMAIN_STATE-/var/lib/halos/resolved-domain}"
+    if [ -n "$state_file" ]; then
+        if [ -n "$d" ] && _halos_domain_safe "$d"; then
+            # Skip the write when the stored value already matches: the common
+            # case is the same domain every boot, and rewriting it is needless
+            # flash wear on the SD/eMMC these devices run from.
+            local stored=""
+            [ -r "$state_file" ] && stored="$(_halos_trim "$(cat "$state_file" 2>/dev/null || true)")"
+            if [ "$stored" != "$d" ]; then
+                mkdir -p "$(dirname "$state_file")" 2>/dev/null || true
+                # Per-PID temp: concurrent loader runs (cert-renewal timer,
+                # prestart on container restart, manual reload-oidc-clients)
+                # must not truncate each other's write to a shared temp name.
+                local tmp="${state_file}.$$"
+                if printf '%s' "$d" > "$tmp" 2>/dev/null && mv -f "$tmp" "$state_file" 2>/dev/null; then
+                    :
+                else
+                    rm -f "$tmp" 2>/dev/null || true
+                    _halos_log "HALOS_HOSTNAMES_WARN: could not persist resolved domain to $state_file (stickiness inactive — cert may re-sign each boot)"
                 fi
             fi
-        done < <($nmcli_cmd -t -f IP4.DOMAIN device show 2>/dev/null || true)
+        elif [ -z "$d" ] && [ -r "$state_file" ]; then
+            local stored
+            stored="$(_halos_trim "$(cat "$state_file" 2>/dev/null || true)")"
+            if [ -n "$stored" ] && _halos_domain_safe "$stored"; then
+                _halos_log "HALOS_HOSTNAMES_STICKY: live domain empty, reusing persisted domain: $stored"
+                d="$stored"
+            fi
+        fi
     fi
 
     HALOS_HOSTNAMES_DOMAIN_CACHE="$d"
     printf '%s' "$d"
+    return 0
 }
 
 # Validate IPv4 octet bounds (regex only matches digit shape).

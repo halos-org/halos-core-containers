@@ -42,11 +42,32 @@ Resolution order, first non-empty wins:
 `declare -F` so a stray environment export cannot short-circuit
 production resolution.)
 
-If no domain resolves, lines using `${fqdn}` or `${domain}` are silently
-skipped (logged as `HALOS_HOSTNAMES_SKIP`); other entries continue to
-apply. Boot proceeds normally — the device just doesn't answer on its
-DHCP-derived FQDN until the domain is set or DHCP lease changes are
-followed by a service restart.
+**Sticky domain.** The last-known-good domain is persisted to
+`/var/lib/halos/resolved-domain`. When the chain above resolves nothing —
+typically at early boot, before NetworkManager has settled — the persisted
+value is reused instead of being treated as "no domain" (logged as
+`HALOS_HOSTNAMES_STICKY`). This stops the cert service from signing a
+`.local`-only leaf at boot and re-signing minutes later once DHCP settles
+(one re-sign per boot). A genuinely *different* resolved domain overwrites
+the stored value, so real domain changes still apply. Trade-off: a device
+that *permanently* moves to a network with no DHCP domain keeps its old
+FQDN as a stale-but-harmless cert SAN until a domain resolves again.
+
+The state file is shared by every loader consumer (the cert service,
+`prestart.sh`, and `reload-oidc-clients`), which is what keeps their views
+of the hostname set consistent. The first of them to observe a *new* live
+domain rewrites the file; the others read it. Note the refresh boundaries:
+the cert service re-signs as soon as it sees a domain change, but the
+Authelia cookie / OIDC `redirect_uris` config rendered by `prestart.sh`
+only picks up the new domain on its next run (a `halos-core-containers`
+restart). On a genuine domain change, restart the service to realign SSO
+config with the cert.
+
+If no domain has *ever* resolved (nothing persisted yet), lines using
+`${fqdn}` or `${domain}` are silently skipped (logged as
+`HALOS_HOSTNAMES_SKIP`); other entries continue to apply. Boot proceeds
+normally — the device just doesn't answer on its DHCP-derived FQDN until
+the domain first resolves.
 
 ## Single-label hostnames — don't use them
 
