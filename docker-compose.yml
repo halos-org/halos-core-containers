@@ -183,8 +183,9 @@ services:
         tag: "{{.Name}}"
 
   ca-download:
-    # Sidecar that publishes the active device CA at /halos-ca.crt so
-    # operators can install one trust anchor for all services on this device.
+    # Sidecar that publishes the active device CA at /ca/halos-ca.crt plus a
+    # trust-install landing page at /ca/, so operators can install one trust
+    # anchor for all services on this device.
     # Routed by Traefik (no host port published). prestart.sh copies the
     # active CA's PEM bytes into the mounted dir each run.
     image: nginx:1.27-alpine
@@ -199,6 +200,10 @@ services:
       # path layout.
       - ${CONTAINER_DATA_ROOT}/${PACKAGE_NAME:-halos-core-containers}/certs/public:/srv:ro
       - ./assets/ca-download/nginx.conf:/etc/nginx/nginx.conf:ro
+      # Landing page assets, served read-only under /ca/. Mounted as a sibling
+      # of /srv (NOT /srv/landing): /srv is itself a read-only bind mount, so
+      # Docker cannot create a nested mountpoint inside it.
+      - ./assets/ca-download/landing:/srv-landing:ro
     healthcheck:
       # Probe the actual served path so a missing or unreadable
       # /srv/halos-ca.crt marks the container unhealthy (autoheal then
@@ -210,7 +215,7 @@ services:
       # IPv4. localhost probes get ECONNREFUSED → container stays
       # unhealthy → Traefik 3.7 filters unhealthy containers from
       # discovery → endpoint silently unreachable behind a homarr 404.
-      test: ["CMD", "wget", "-q", "--spider", "http://127.0.0.1/halos-ca.crt"]
+      test: ["CMD", "wget", "-q", "--spider", "http://127.0.0.1/ca/halos-ca.crt"]
       interval: 10s
       timeout: 5s
       start_period: 30s
@@ -219,15 +224,19 @@ services:
       - proxy
     labels:
       - traefik.enable=true
-      # HTTP — exact-path match, redirected to HTTPS. Priority 200 beats
-      # homarr's catch-all PathPrefix(`/`) at priority 1.
-      - traefik.http.routers.ca-download-http.rule=Path(`/halos-ca.crt`)
+      # HTTP — /ca/ prefix, the bare /ca (which the sidecar 308-redirects to
+      # /ca/), plus the legacy /halos-ca.crt path (answered with a 410 +
+      # canonical hint), redirected to HTTPS. Priority 200 beats homarr's
+      # catch-all PathPrefix(`/`) at priority 1.
+      - traefik.http.routers.ca-download-http.rule=PathPrefix(`/ca/`) || Path(`/ca`) || Path(`/halos-ca.crt`)
       - traefik.http.routers.ca-download-http.entrypoints=web
       - traefik.http.routers.ca-download-http.middlewares=redirect-to-https@file
       - traefik.http.routers.ca-download-http.priority=200
-      # HTTPS — exact-path match. No ForwardAuth: this is a public trust
-      # anchor; gating it would defeat the chicken-and-egg bootstrap.
-      - traefik.http.routers.ca-download-secure.rule=Path(`/halos-ca.crt`)
+      # HTTPS — /ca/ prefix, the bare /ca (308-redirected to /ca/ by the
+      # sidecar), plus the legacy /halos-ca.crt path. No ForwardAuth: this is
+      # a public trust anchor; gating it would defeat the chicken-and-egg
+      # bootstrap.
+      - traefik.http.routers.ca-download-secure.rule=PathPrefix(`/ca/`) || Path(`/ca`) || Path(`/halos-ca.crt`)
       - traefik.http.routers.ca-download-secure.entrypoints=websecure
       - traefik.http.routers.ca-download-secure.tls=true
       - traefik.http.routers.ca-download-secure.priority=200
