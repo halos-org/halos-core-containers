@@ -81,7 +81,15 @@ check "GET /ca/halos-ca.crt status"        "200" "$(code "$BASE/ca/halos-ca.crt"
 check "GET /ca/halos-ca.crt content-type"  "application/x-x509-ca-cert" "$(hdr "$BASE/ca/halos-ca.crt" Content-Type)"
 check "GET /ca/halos-ca.crt disposition"   'attachment; filename="halos-ca.crt"' "$(hdr "$BASE/ca/halos-ca.crt" Content-Disposition)"
 
-# /ca/ — landing page (proves the nested /srv/landing mount serves index.html).
+# Bare /ca — canonical-trailing-slash redirect to /ca/ (so it doesn't fall
+# through to the homarr catch-all and miss the landing page).
+check "GET /ca redirect status"            "308" "$(code "$BASE/ca")"
+# Location must be RELATIVE (/ca/), not scheme-qualified: behind Traefik's
+# TLS termination an absolute http:// Location downgrades the client. Exact
+# match asserts `absolute_redirect off` is in effect.
+check "GET /ca Location is relative /ca/"  "/ca/" "$(hdr "$BASE/ca" Location)"
+
+# /ca/ — landing page (proves the sibling /srv-landing mount serves index.html).
 check "GET /ca/ status"                    "200" "$(code "$BASE/ca/")"
 case "$(hdr "$BASE/ca/" Content-Type)" in text/html*) ct_ok=1 ;; *) ct_ok=0 ;; esac
 check "GET /ca/ is text/html"              "1" "$ct_ok"

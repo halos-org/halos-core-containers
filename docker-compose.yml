@@ -224,17 +224,19 @@ services:
       - proxy
     labels:
       - traefik.enable=true
-      # HTTP — /ca/ prefix plus the legacy /halos-ca.crt path (which the
-      # sidecar answers with a 410 + canonical hint), redirected to HTTPS.
-      # Priority 200 beats homarr's catch-all PathPrefix(`/`) at priority 1.
-      - traefik.http.routers.ca-download-http.rule=PathPrefix(`/ca/`) || Path(`/halos-ca.crt`)
+      # HTTP — /ca/ prefix, the bare /ca (which the sidecar 308-redirects to
+      # /ca/), plus the legacy /halos-ca.crt path (answered with a 410 +
+      # canonical hint), redirected to HTTPS. Priority 200 beats homarr's
+      # catch-all PathPrefix(`/`) at priority 1.
+      - traefik.http.routers.ca-download-http.rule=PathPrefix(`/ca/`) || Path(`/ca`) || Path(`/halos-ca.crt`)
       - traefik.http.routers.ca-download-http.entrypoints=web
       - traefik.http.routers.ca-download-http.middlewares=redirect-to-https@file
       - traefik.http.routers.ca-download-http.priority=200
-      # HTTPS — /ca/ prefix plus the legacy /halos-ca.crt path. No
-      # ForwardAuth: this is a public trust anchor; gating it would defeat
-      # the chicken-and-egg bootstrap.
-      - traefik.http.routers.ca-download-secure.rule=PathPrefix(`/ca/`) || Path(`/halos-ca.crt`)
+      # HTTPS — /ca/ prefix, the bare /ca (308-redirected to /ca/ by the
+      # sidecar), plus the legacy /halos-ca.crt path. No ForwardAuth: this is
+      # a public trust anchor; gating it would defeat the chicken-and-egg
+      # bootstrap.
+      - traefik.http.routers.ca-download-secure.rule=PathPrefix(`/ca/`) || Path(`/ca`) || Path(`/halos-ca.crt`)
       - traefik.http.routers.ca-download-secure.entrypoints=websecure
       - traefik.http.routers.ca-download-secure.tls=true
       - traefik.http.routers.ca-download-secure.priority=200
