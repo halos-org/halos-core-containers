@@ -128,7 +128,7 @@ function deploy-build {
 # Test Commands
 
 function test {
-  #@ Run shell-library tests
+  #@ Run shell-library and Python tests
   #@ Category: Test
   local fail=0
   for test_script in tests/test-*.sh; do
@@ -138,6 +138,19 @@ function test {
       fail=1
     fi
   done
+  # Python tests (tests/test_*.py) cover Docker-free checks — the tile contract
+  # and landing-page content — so they run where the Docker-gated shell suite
+  # skips (e.g. the trixie CI container).
+  if ls tests/test_*.py >/dev/null 2>&1; then
+    echo "=== Running pytest ==="
+    if command -v pytest >/dev/null 2>&1; then
+      pytest -q tests/ || fail=1
+    elif python3 -c 'import pytest' >/dev/null 2>&1; then
+      python3 -m pytest -q tests/ || fail=1
+    else
+      echo "pytest unavailable; skipping Python tests (CI runs them separately)"
+    fi
+  fi
   return $fail
 }
 

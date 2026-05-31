@@ -165,7 +165,8 @@ text.
 (`assets/ca-download/landing/index.html`) that guides the operator through
 installing the `.crt` per platform: macOS, iOS/iPadOS, Android, Linux, and
 Windows. Client-side User-Agent detection auto-expands the section matching
-the visitor's OS; with JavaScript off, every section is visible. The page
+the visitor's OS; with JavaScript off, the sections stay collapsed but remain
+accessible — clicking any heading expands it. The page
 states up front that installing the certificate and trusting it are separate
 steps on every platform — Apple's *Certificate Trust Settings* toggle,
 macOS *Always Trust*, Android's browser-only trust, and the Firefox NSS

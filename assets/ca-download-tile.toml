@@ -4,9 +4,10 @@
 
 name = "Install device trust"
 # Path-only URL: resolves against whatever hostname the user is on, so the
-# tile works over mDNS, VPN FQDN, or DHCP-DNS. The sidecar 308-redirects the
-# bare /ca to /ca/, which serves the per-OS walkthrough.
-url = "/ca"
+# tile works over mDNS, VPN FQDN, or DHCP-DNS. Trailing slash matches the
+# canonical landing path the sidecar serves (a bare /ca would 308 to /ca/),
+# consistent with the other registry tiles.
+url = "/ca/"
 description = "Trust this device's certificate to remove browser warnings"
 icon_url = "/usr/share/pixmaps/halos-ca-download.svg"
 category = "System"

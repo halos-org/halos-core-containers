@@ -93,24 +93,12 @@ check "GET /ca Location is relative /ca/"  "/ca/" "$(hdr "$BASE/ca" Location)"
 check "GET /ca/ status"                    "200" "$(code "$BASE/ca/")"
 case "$(hdr "$BASE/ca/" Content-Type)" in text/html*) ct_ok=1 ;; *) ct_ok=0 ;; esac
 check "GET /ca/ is text/html"              "1" "$ct_ok"
-landing="$(curl -s "$BASE/ca/")"
-case "$landing" in *"HaLOS device trust"*) body_ok=1 ;; *) body_ok=0 ;; esac
+case "$(curl -s "$BASE/ca/")" in *"HaLOS device trust"*) body_ok=1 ;; *) body_ok=0 ;; esac
 check "GET /ca/ serves landing body"       "1" "$body_ok"
-
-# Guard against a regression to the Unit 1 placeholder: the page must carry the
-# real per-OS walkthrough. Assert one unmistakable marker per platform plus the
-# trust-vs-install caveat, so a content rollback (or a half-built page) fails
-# loudly here rather than shipping a dead trust experience.
-for marker in \
-    "Always Trust" \
-    "Certificate Trust Settings" \
-    "CA certificate" \
-    "update-ca-certificates" \
-    "Trusted Root Certification Authorities" \
-    "Installing the certificate is not enough"; do
-    case "$landing" in *"$marker"*) found=1 ;; *) found=0 ;; esac
-    check "landing covers: $marker"        "1" "$found"
-done
+# Per-OS walkthrough *content* (the placeholder-regression guard) is asserted
+# in tests/test_landing_content.py, which reads the HTML directly and runs in
+# CI without Docker — this Docker-gated suite skips entirely in the trixie CI
+# container, so content checks must not live here.
 
 # /halos-ca.crt — moved; 410 Gone with a canonical hint.
 check "GET /halos-ca.crt status"           "410" "$(code "$BASE/halos-ca.crt")"
