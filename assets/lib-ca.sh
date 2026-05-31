@@ -18,6 +18,8 @@
 #                                              install combined PEM override for cockpit-tls
 #   - halos_ca_publish_public <src_crt> <public_dir>
 #                                              copy active CA into a public-bindmount target
+#   - halos_ca_publish_mobileconfig <src_crt> <public_dir> <display_host>
+#                                              generate an Apple .mobileconfig carrying the CA
 #
 # Generated certs carry the extensions browsers + OS trust stores require:
 #   CA   — basicConstraints CA:TRUE (so importing as trust anchor actually works),
@@ -728,6 +730,198 @@ halos_ca_publish_public() {
     if ! mv "$public_new" "$public_file"; then
         rm -f "$public_new"
         echo "halos_ca_publish_public: failed to mv $public_new to $public_file; previous copy (if any) is preserved" >&2
+        return 1
+    fi
+}
+
+# _halos_uuid_from_hex <>=32-hex-chars>
+# Format the first 32 hex chars of the input into the 8-4-4-4-12 UUID shape
+# (uppercase). Apple only requires PayloadUUID to be a unique UUID-shaped
+# string, not an RFC-4122-versioned one.
+_halos_uuid_from_hex() {
+    local h="$1"
+    printf '%s-%s-%s-%s-%s' \
+        "${h:0:8}" "${h:8:4}" "${h:12:4}" "${h:16:4}" "${h:20:12}" \
+        | tr '[:lower:]' '[:upper:]'
+}
+
+# halos_ca_publish_mobileconfig <src_ca_crt> <public_dir> <display_host>
+# Generate an unsigned Apple Configuration Profile that carries the active CA
+# as a trusted-root payload, written atomically to
+# <public_dir>/halos-ca.mobileconfig (mode 0644). The ca-download sidecar
+# serves it at /ca/halos-ca.mobileconfig so iOS/iPadOS users install via the OS
+# profile installer instead of the raw-.crt download, which iOS routes to the
+# Files app (#169). It is not used on macOS — a profile-delivered root is not
+# added to Keychain Access there and has no SSL-trust UI, so macOS uses the .crt.
+#
+# <display_host> is embedded in PayloadDisplayName ("HaLOS Device CA (<host>)")
+# so the profile is distinguishable per-device in a fleet's Profiles list. The
+# caller passes the canonical hostname; this library stays free of any
+# lib-hostnames dependency.
+#
+# The profile is UNSIGNED: signing needs an Apple Developer ID we do not own.
+# Unsigned profiles install fine with a cosmetic "Not Signed" warning. Install
+# is NOT trust: macOS Sequoia / iOS 17-18 still require a separate trust action
+# (Keychain Access "Always Trust" / Settings -> Certificate Trust Settings).
+#
+# The plist template lives inline (heredoc) rather than as a separate asset
+# file: lib-ca.sh installs to /usr/lib/<pkg>/ while assets/ trees install into
+# the container-app data dir, so an external template would couple this helper
+# to a second install path. Mirrors the inline leaf-ext heredoc in
+# halos_ca_sign_leaf.
+#
+# Profile UUIDs and identifiers are derived from the CA's SHA-256 fingerprint,
+# not fixed constants. Apple keys a profile's identity on its
+# PayloadUUID/PayloadIdentifier: a globally fixed value would mean installing a
+# second HaLOS device's profile silently REPLACES the first device's CA on the
+# same Apple device (fleet trust loss). The per-device CA fingerprint makes each
+# device's profile unique while staying stable for a given CA, so reinstalls of
+# the same device's profile still overwrite cleanly. A CA rotation yields a new
+# profile rather than an in-place replacement — acceptable, since operators must
+# re-trust on rotation anyway.
+#
+# Failure semantics: on any failure leaves the pre-existing output (if any)
+# untouched, removes the .new sibling, returns non-zero.
+#
+# Return codes:
+#   0 — success
+#   1 — runtime failure (missing source, DER conversion/parse error, write error)
+#   2 — caller bug (missing args)
+halos_ca_publish_mobileconfig() {
+    local src_crt="$1" public_dir="$2" display_host="$3"
+    if [ -z "$src_crt" ] || [ -z "$public_dir" ] || [ -z "$display_host" ]; then
+        echo "halos_ca_publish_mobileconfig: <src_crt> <public_dir> <display_host> all required" >&2
+        return 2
+    fi
+    if [ ! -f "$src_crt" ]; then
+        echo "halos_ca_publish_mobileconfig: source cert missing: $src_crt" >&2
+        return 1
+    fi
+
+    if ! mkdir -p "$public_dir"; then
+        echo "halos_ca_publish_mobileconfig: failed to mkdir $public_dir" >&2
+        return 1
+    fi
+    chmod 0755 "$public_dir" 2>/dev/null || true
+
+    # Convert the CA to DER via a tempfile (not a pipe) so a conversion failure
+    # is caught by openssl's exit status rather than swallowed mid-pipeline,
+    # then base64-flatten. Guard every capture explicitly: this library is not
+    # under `set -e`, and even when it is, command-substitution failures in an
+    # assignment do not abort (see docs/solutions/2026-05-24-set-e-cmdsubst-blind-spot.md).
+    local der_tmp
+    der_tmp="$(mktemp)" || {
+        echo "halos_ca_publish_mobileconfig: mktemp failed" >&2
+        return 1
+    }
+    if ! openssl x509 -in "$src_crt" -outform DER -out "$der_tmp" 2>/dev/null; then
+        rm -f "$der_tmp"
+        echo "halos_ca_publish_mobileconfig: failed to convert $src_crt to DER (not a certificate?)" >&2
+        return 1
+    fi
+    # Re-parse the DER as a sanity gate before embedding — catches a truncated
+    # or non-cert source that somehow produced output bytes.
+    if ! openssl x509 -inform DER -in "$der_tmp" -noout 2>/dev/null; then
+        rm -f "$der_tmp"
+        echo "halos_ca_publish_mobileconfig: DER conversion of $src_crt did not re-parse as a certificate" >&2
+        return 1
+    fi
+    # Capture base64 directly (not through a pipe) so its exit status is the
+    # one tested — a piped `| tr` would mask a base64 read failure behind tr's
+    # success and let truncated bytes through. Flatten newlines as a separate
+    # step. der_tmp is removed on every path past this point.
+    local der_b64
+    if ! der_b64="$(base64 < "$der_tmp")"; then
+        rm -f "$der_tmp"
+        echo "halos_ca_publish_mobileconfig: base64 of CA DER failed" >&2
+        return 1
+    fi
+    rm -f "$der_tmp"
+    der_b64="$(printf '%s' "$der_b64" | tr -d '\n')"
+    if [ -z "$der_b64" ]; then
+        echo "halos_ca_publish_mobileconfig: base64 of CA DER was empty" >&2
+        return 1
+    fi
+
+    # Per-device profile identity, derived from the CA fingerprint (see header).
+    local fp
+    if ! fp="$(halos_ca_fingerprint "$src_crt")"; then
+        echo "halos_ca_publish_mobileconfig: failed to fingerprint $src_crt" >&2
+        return 1
+    fi
+    local outer_uuid cert_uuid outer_id cert_id
+    outer_uuid="$(_halos_uuid_from_hex "${fp:0:32}")"
+    cert_uuid="$(_halos_uuid_from_hex "${fp:32:32}")"
+    outer_id="fi.halos.ca-trust.${fp:0:12}"
+    cert_id="fi.halos.ca-trust.root.${fp:0:12}"
+
+    local out_file="${public_dir}/halos-ca.mobileconfig"
+    local out_new="${out_file}.new.$$"
+    rm -f "$out_new"
+
+    # PayloadType com.apple.security.root adds the CA to the trusted roots and
+    # surfaces the iOS Certificate Trust Settings entry. PayloadRemovalDisallowed
+    # false so users can remove it. No outer signature (unsigned profile).
+    if ! ( umask 022 && cat > "$out_new" <<EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>PayloadContent</key>
+	<array>
+		<dict>
+			<key>PayloadType</key>
+			<string>com.apple.security.root</string>
+			<key>PayloadVersion</key>
+			<integer>1</integer>
+			<key>PayloadIdentifier</key>
+			<string>${cert_id}</string>
+			<key>PayloadUUID</key>
+			<string>${cert_uuid}</string>
+			<key>PayloadDisplayName</key>
+			<string>HaLOS Device CA (${display_host})</string>
+			<key>PayloadCertificateFileName</key>
+			<string>halos-ca.crt</string>
+			<key>PayloadContent</key>
+			<data>${der_b64}</data>
+		</dict>
+	</array>
+	<key>PayloadType</key>
+	<string>Configuration</string>
+	<key>PayloadVersion</key>
+	<integer>1</integer>
+	<key>PayloadIdentifier</key>
+	<string>${outer_id}</string>
+	<key>PayloadUUID</key>
+	<string>${outer_uuid}</string>
+	<key>PayloadDisplayName</key>
+	<string>HaLOS Device CA (${display_host})</string>
+	<key>PayloadDescription</key>
+	<string>Installs this HaLOS device's certificate authority so its web services validate without warnings. Trusting the CA for SSL is a separate step after install.</string>
+	<key>PayloadRemovalDisallowed</key>
+	<false/>
+</dict>
+</plist>
+EOF
+    ); then
+        rm -f "$out_new"
+        echo "halos_ca_publish_mobileconfig: failed to write $out_new" >&2
+        return 1
+    fi
+
+    if ! chmod 0644 "$out_new"; then
+        rm -f "$out_new"
+        echo "halos_ca_publish_mobileconfig: chmod 0644 failed on $out_new" >&2
+        return 1
+    fi
+    if [ -d "$out_file" ]; then
+        rm -f "$out_new"
+        echo "halos_ca_publish_mobileconfig: refusing to install over directory at $out_file" >&2
+        return 1
+    fi
+    if ! mv "$out_new" "$out_file"; then
+        rm -f "$out_new"
+        echo "halos_ca_publish_mobileconfig: failed to mv $out_new to $out_file; previous copy (if any) is preserved" >&2
         return 1
     fi
 }
