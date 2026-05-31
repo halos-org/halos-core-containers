@@ -125,29 +125,43 @@
       <details id="macos">
         <summary>macOS</summary>
         <ol>
-          <li>Click <strong>Download</strong> above. <code>halos-ca.crt</code> lands in Downloads.</li>
-          <li>Double-click the file. Keychain Access opens and adds the certificate to the <strong>System</strong> keychain (if it asks which keychain, choose System); enter an admin password if prompted.</li>
-          <li>It's installed but not yet trusted. In Keychain Access, find the HaLOS CA under <strong>System</strong> ▸ <em>Certificates</em> and double-click it.</li>
-          <li>Expand <strong>Trust</strong> and set <em>When using this certificate</em> to <strong>Always Trust</strong>. Close the window and authenticate. <span class="caveat">This trust step is mandatory and separate from the install — without it the warnings stay.</span></li>
+          <li>Download <a href="/ca/halos-ca.crt" download="halos-ca.crt"><code>halos-ca.crt</code></a> (the button at the top does the same).</li>
+          <li>Double-click the downloaded file. Keychain Access opens and adds the certificate to the <strong>System</strong> keychain (choose System if it asks which keychain); enter an admin password if prompted.</li>
+          <li>It's installed but not yet trusted. In Keychain Access, select the <strong>System</strong> keychain, find <em>HaLOS Device CA</em> under <em>Certificates</em>, and double-click it.</li>
+          <li>Expand <strong>Trust</strong> and set <em>Secure Sockets Layer (SSL)</em> (or <em>When using this certificate</em>) to <strong>Always Trust</strong>. Close the window and authenticate. <span class="caveat">macOS keeps install and trust separate — without this step the warnings stay.</span></li>
           <li>Quit and reopen your browser.</li>
         </ol>
+        <p class="caveat">On macOS the raw certificate is the reliable path: a certificate delivered by a configuration profile is not added to Keychain Access and cannot be granted SSL trust there, so the profile install (used on iPhone/iPad) does not help on a Mac.</p>
       </details>
 
       <details id="ios">
         <summary>iPhone / iPad (iOS &amp; iPadOS)</summary>
+        <p>
+          <a class="download" href="/ca/halos-ca.mobileconfig"
+            >Download the install profile</a
+          >
+        </p>
         <ol>
-          <li>Tap <strong>Download</strong> above and allow the download. iOS shows <em>Profile Downloaded</em>.</li>
-          <li>Open <strong>Settings → General → VPN &amp; Device Management</strong>, tap the downloaded profile, then <strong>Install</strong> (enter your passcode).</li>
+          <li>Tap <strong>Download the install profile</strong> above in <strong>Safari</strong> and allow it. iOS shows <em>Profile Downloaded</em>. <span class="caveat">Use Safari — other browsers can't hand the profile to iOS.</span></li>
+          <li>Open <strong>Settings → General → VPN &amp; Device Management</strong>, tap the <em>HaLOS Device CA</em> profile, then <strong>Install</strong> (enter your passcode). <span class="caveat">The profile is unsigned, so iOS marks it "Not Verified" — expected for your own device.</span></li>
           <li><strong>Then</strong> open <strong>Settings → General → About → Certificate Trust Settings</strong> and turn on the toggle for the HaLOS CA. <span class="caveat">iOS 17/18 require this separate toggle — installing the profile alone does not trust it for websites.</span></li>
         </ol>
+        <details>
+          <summary>Advanced: install the raw certificate instead</summary>
+          <ol>
+            <li>Download <a href="/ca/halos-ca.crt" download="halos-ca.crt"><code>halos-ca.crt</code></a> in Safari. iOS usually saves it to the <strong>Files</strong> app instead of prompting.</li>
+            <li>Open the <strong>Files</strong> app and tap the downloaded <code>halos-ca.crt</code>. iOS asks whether to allow the certificate — allow it, then it appears under <strong>Settings → General → VPN &amp; Device Management</strong>.</li>
+            <li>Install it from there, then enable it under <strong>Settings → General → About → Certificate Trust Settings</strong>. <span class="caveat">The install profile above avoids this Files-app detour — prefer it.</span></li>
+          </ol>
+        </details>
       </details>
 
       <details id="android">
         <summary>Android</summary>
         <ol>
           <li>Tap <strong>Download</strong> above to save <code>halos-ca.crt</code>.</li>
-          <li>Open <strong>Settings → Security &amp; privacy → More security settings → Encryption &amp; credentials → Install a certificate → CA certificate</strong> (the exact path varies by vendor).</li>
-          <li>Accept the warning and pick the downloaded file.</li>
+          <li>Open <strong>Settings</strong>, search for <strong>cert</strong>, and choose <strong>CA certificate</strong> under <em>Install a certificate</em>. <span class="caveat">Searching jumps straight to the right screen — the manual path (Security → Encryption &amp; credentials) is several taps deep and varies by vendor.</span></li>
+          <li>Accept the warning and pick the downloaded <code>halos-ca.crt</code>.</li>
         </ol>
         <p class="caveat">Android trusts user-installed CAs in browsers only, not in apps — this is an Android design decision. You will get a green lock in Chrome or Brave; native apps still show warnings.</p>
       </details>
@@ -174,7 +188,7 @@ sudo update-ca-certificates</pre>
           <li>Select <strong>Place all certificates in the following store → Trusted Root Certification Authorities</strong>, then finish.</li>
           <li>Restart your browser.</li>
         </ol>
-        <p class="caveat">Firefox on Windows also uses its own store — import the certificate as described in the Linux section.</p>
+        <p class="caveat">Chrome and Edge use the Windows certificate store automatically. Firefox keeps its own store: either set <code>security.enterprise_roots.enabled</code> to <code>true</code> in <code>about:config</code> (Firefox then trusts the certificate you just installed), or import <code>halos-ca.crt</code> directly as described in the Linux section.</p>
       </details>
 
       <footer>

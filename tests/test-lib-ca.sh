@@ -1187,6 +1187,157 @@ test_publish_public_no_new_debris_on_success() {
     ! ls "$pub"/halos-ca.crt.new.* >/dev/null 2>&1 || { echo ".new.<pid> sibling should not remain after success"; return 1; }
 }
 
+# Decode the base64 <data> payload from a .mobileconfig into a DER file.
+# Pulls the single-line base64 between the <data> tags (our generator emits it
+# flattened), strips whitespace, and base64-decodes. Echoes the DER path.
+_extract_mobileconfig_der() {
+    local mc="$1" out="$2"
+    sed -n 's|.*<data>\(.*\)</data>.*|\1|p' "$mc" | head -1 | tr -d ' \t' | base64 -d > "$out" 2>/dev/null
+}
+
+test_publish_mobileconfig_happy_path() {
+    local d="$TMPDIR_ROOT/case_mc_happy"
+    local pub="$d/public"
+    mkdir -p "$d"
+    halos_ca_ensure_auto "$d" || return 1
+    halos_ca_publish_mobileconfig "$d/ca.crt" "$pub" "halosdev.local" \
+        || { echo "publish_mobileconfig returned non-zero"; return 1; }
+    local mc="$pub/halos-ca.mobileconfig"
+    [ -f "$mc" ] || { echo ".mobileconfig not created"; return 1; }
+    grep -q '<plist version="1.0">' "$mc" || { echo "missing plist root"; return 1; }
+    grep -q 'com.apple.security.root' "$mc" || { echo "missing root payload type"; return 1; }
+    local mode; mode=$(_stat_mode "$mc")
+    assert_eq "$mode" "644" ".mobileconfig must be mode 0644" || return 1
+}
+
+test_publish_mobileconfig_der_round_trips() {
+    # The CA embedded in the profile must be byte-identical to the input CA:
+    # decode the <data> payload back to DER and compare fingerprints.
+    local d="$TMPDIR_ROOT/case_mc_roundtrip"
+    local pub="$d/public"
+    mkdir -p "$d"
+    halos_ca_ensure_auto "$d" || return 1
+    local src_fp; src_fp=$(halos_ca_fingerprint "$d/ca.crt") || return 1
+    halos_ca_publish_mobileconfig "$d/ca.crt" "$pub" "halosdev.local" || return 1
+    local der="$d/extracted.der"
+    _extract_mobileconfig_der "$pub/halos-ca.mobileconfig" "$der"
+    [ -s "$der" ] || { echo "failed to extract DER payload"; return 1; }
+    local pem_fp
+    pem_fp=$(openssl x509 -inform DER -in "$der" -noout -fingerprint -sha256 2>/dev/null \
+        | sed -e 's/^.*Fingerprint=//' -e 's/://g' | tr '[:upper:]' '[:lower:]')
+    assert_eq "$pem_fp" "$src_fp" "embedded CA DER must match the source CA" || return 1
+}
+
+test_publish_mobileconfig_embeds_display_host() {
+    local d="$TMPDIR_ROOT/case_mc_host"
+    local pub="$d/public"
+    mkdir -p "$d"
+    halos_ca_ensure_auto "$d" || return 1
+    halos_ca_publish_mobileconfig "$d/ca.crt" "$pub" "boat-pi.local" || return 1
+    grep -q 'HaLOS Device CA (boat-pi.local)' "$pub/halos-ca.mobileconfig" \
+        || { echo "display host not embedded in PayloadDisplayName"; return 1; }
+}
+
+test_publish_mobileconfig_is_deterministic() {
+    # Same CA + host on two runs → byte-identical output (fixed UUIDs). Guards
+    # against a regression to random UUIDs, which would make every rotation
+    # look like a content change to clients diffing the file.
+    local d="$TMPDIR_ROOT/case_mc_determ"
+    local pub="$d/public"
+    mkdir -p "$d"
+    halos_ca_ensure_auto "$d" || return 1
+    halos_ca_publish_mobileconfig "$d/ca.crt" "$pub" "halosdev.local" || return 1
+    local h1; h1=$(openssl dgst -sha256 "$pub/halos-ca.mobileconfig" | awk '{print $NF}')
+    halos_ca_publish_mobileconfig "$d/ca.crt" "$pub" "halosdev.local" || return 1
+    local h2; h2=$(openssl dgst -sha256 "$pub/halos-ca.mobileconfig" | awk '{print $NF}')
+    assert_eq "$h2" "$h1" "same CA + host must produce byte-identical output" || return 1
+}
+
+test_publish_mobileconfig_missing_args_errors() {
+    halos_ca_publish_mobileconfig "" "" "" >/dev/null 2>&1
+    local rc=$?
+    assert_eq "$rc" "2" "missing args must exit 2 (caller bug)" || return 1
+}
+
+test_publish_mobileconfig_missing_source_errors() {
+    local d="$TMPDIR_ROOT/case_mc_missing_src"
+    mkdir -p "$d"
+    halos_ca_publish_mobileconfig "$d/nope.crt" "$d/public" "halosdev.local" >/dev/null 2>&1
+    local rc=$?
+    assert_eq "$rc" "1" "missing source must exit 1 (runtime failure)" || return 1
+    [ ! -f "$d/public/halos-ca.mobileconfig" ] || { echo "no output should be written"; return 1; }
+}
+
+test_publish_mobileconfig_rejects_non_cert_source() {
+    local d="$TMPDIR_ROOT/case_mc_bad_src"
+    local pub="$d/public"
+    mkdir -p "$d"
+    printf 'not a certificate\n' > "$d/bad.crt"
+    halos_ca_publish_mobileconfig "$d/bad.crt" "$pub" "halosdev.local" >/dev/null 2>&1
+    local rc=$?
+    assert_eq "$rc" "1" "non-cert source must exit 1" || return 1
+    [ ! -f "$pub/halos-ca.mobileconfig" ] || { echo "no output should be written"; return 1; }
+    ! ls "$pub"/halos-ca.mobileconfig.new.* >/dev/null 2>&1 || { echo "no .new debris should remain"; return 1; }
+}
+
+test_publish_mobileconfig_uuid_is_per_ca() {
+    # Two distinct CAs must yield distinct PayloadUUIDs — the fleet-collision
+    # guard. A regression to fixed UUIDs would make a second device's profile
+    # silently replace the first on the same Apple device.
+    local da="$TMPDIR_ROOT/case_mc_uuid_a"
+    local db="$TMPDIR_ROOT/case_mc_uuid_b"
+    mkdir -p "$da" "$db"
+    halos_ca_ensure_auto "$da" || return 1
+    halos_ca_ensure_auto "$db" || return 1
+    halos_ca_publish_mobileconfig "$da/ca.crt" "$da/pub" "halosdev.local" || return 1
+    halos_ca_publish_mobileconfig "$db/ca.crt" "$db/pub" "halosdev.local" || return 1
+    # First <string> after the outer PayloadUUID key.
+    local ua ub
+    ua=$(grep -A1 '<key>PayloadUUID</key>' "$da/pub/halos-ca.mobileconfig" | grep '<string>' | head -1)
+    ub=$(grep -A1 '<key>PayloadUUID</key>' "$db/pub/halos-ca.mobileconfig" | grep '<string>' | head -1)
+    [ -n "$ua" ] || { echo "no PayloadUUID found"; return 1; }
+    if [ "$ua" = "$ub" ]; then
+        echo "distinct CAs produced identical PayloadUUID ($ua) — fleet collision"
+        return 1
+    fi
+}
+
+test_publish_mobileconfig_refuses_directory_at_output() {
+    local d="$TMPDIR_ROOT/case_mc_dir_at_out"
+    local pub="$d/public"
+    mkdir -p "$d" "$pub/halos-ca.mobileconfig"
+    halos_ca_ensure_auto "$d" || return 1
+    halos_ca_publish_mobileconfig "$d/ca.crt" "$pub" "halosdev.local" >/dev/null 2>&1
+    local rc=$?
+    assert_eq "$rc" "1" "directory at out_path must exit 1" || return 1
+    [ -d "$pub/halos-ca.mobileconfig" ] || { echo "directory must be preserved"; return 1; }
+    ! ls "$pub"/halos-ca.mobileconfig.new.* >/dev/null 2>&1 || { echo "no .new debris should remain"; return 1; }
+}
+
+test_publish_mobileconfig_no_new_debris_on_success() {
+    local d="$TMPDIR_ROOT/case_mc_no_debris"
+    local pub="$d/public"
+    mkdir -p "$d"
+    halos_ca_ensure_auto "$d" || return 1
+    halos_ca_publish_mobileconfig "$d/ca.crt" "$pub" "halosdev.local" || return 1
+    ! ls "$pub"/halos-ca.mobileconfig.new.* >/dev/null 2>&1 || { echo ".new.<pid> sibling should not remain after success"; return 1; }
+}
+
+test_publish_mobileconfig_preserves_existing_on_failure() {
+    local d="$TMPDIR_ROOT/case_mc_preserve"
+    local pub="$d/public"
+    mkdir -p "$d"
+    halos_ca_ensure_auto "$d" || return 1
+    halos_ca_publish_mobileconfig "$d/ca.crt" "$pub" "halosdev.local" || return 1
+    local good_hash; good_hash=$(openssl dgst -sha256 "$pub/halos-ca.mobileconfig" | awk '{print $NF}')
+    printf 'not a certificate\n' > "$d/bad.crt"
+    halos_ca_publish_mobileconfig "$d/bad.crt" "$pub" "halosdev.local" >/dev/null 2>&1
+    local rc=$?
+    assert_eq "$rc" "1" "bad source must fail with rc=1" || return 1
+    local after_hash; after_hash=$(openssl dgst -sha256 "$pub/halos-ca.mobileconfig" | awk '{print $NF}')
+    assert_eq "$after_hash" "$good_hash" "previous .mobileconfig must be preserved on failure" || return 1
+}
+
 test_sign_leaf_validity_under_apple_825_day_cap() {
     # Apple's Secure Transport rejects SSL leaves with validity > 825 days
     # (CA/B Forum baseline + Apple policy since 2019-07-01). Catch any
@@ -1411,6 +1562,17 @@ run_test test_publish_public_rejects_non_cert_source
 run_test test_publish_public_preserves_existing_on_failure
 run_test test_publish_public_refuses_directory_at_output
 run_test test_publish_public_no_new_debris_on_success
+run_test test_publish_mobileconfig_happy_path
+run_test test_publish_mobileconfig_der_round_trips
+run_test test_publish_mobileconfig_embeds_display_host
+run_test test_publish_mobileconfig_is_deterministic
+run_test test_publish_mobileconfig_missing_args_errors
+run_test test_publish_mobileconfig_missing_source_errors
+run_test test_publish_mobileconfig_rejects_non_cert_source
+run_test test_publish_mobileconfig_uuid_is_per_ca
+run_test test_publish_mobileconfig_refuses_directory_at_output
+run_test test_publish_mobileconfig_no_new_debris_on_success
+run_test test_publish_mobileconfig_preserves_existing_on_failure
 run_test test_sign_leaf_validity_under_apple_825_day_cap
 run_test test_leaf_needs_renewal_when_fresh_returns_false
 run_test test_leaf_needs_renewal_when_missing_returns_true

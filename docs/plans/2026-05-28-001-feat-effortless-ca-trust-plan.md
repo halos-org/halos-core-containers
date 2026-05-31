@@ -332,9 +332,15 @@ Homarr dashboard renders the tile alongside other apps
 
 **Goal of Phase 2:** Replace the manual bare-`.crt` install path on Apple platforms (with `.mobileconfig` profiles) and Debian/Ubuntu (with a `.deb` installer) for the cleanest possible UX on those platforms. Scheduled after Phase 1 ships and is observed in production. The units below may be re-scoped into a dedicated follow-on plan when work begins; they're documented here so the full architectural trajectory is captured in one place.
 
+**Phase 2 status (2026-06-01).** Device testing reshaped the Apple scope and cancelled the `.deb`:
+
+- **`.mobileconfig` is iOS/iPadOS-only, not macOS** (PR #173). On macOS (Ventura+) a manually-installed profile root is not SSL-trusted automatically, does not appear in Keychain Access, and macOS has no Certificate Trust Settings toggle — there is no path to trust it. macOS keeps the raw-`.crt` + Keychain "Always Trust" flow. The profile earns its place on iOS, where the trust toggle exists and it fixes the Files-app routing (#169, verified on a real iPad). See `developer.apple.com/forums/thread/724327`.
+- **Unit 6 (`.deb` carrier) — DROPPED.** A `.deb` runs arbitrary maintainer scripts as root; the existing Linux path (`cp` to `/usr/local/share/ca-certificates/` + `update-ca-certificates`) is auditable and the operator can see exactly what it does. The transparency win outweighs the double-click convenience. Linux stays on the CLI path.
+- **Artifact set is now:** `.crt` (all platforms) + `.mobileconfig` (iOS/iPadOS). No `.deb`.
+
 ### Unit 5 — `.mobileconfig` artifact
 
-- [ ] **Unit 5: Apple Configuration Profile artifact**
+- [x] **Unit 5: Apple Configuration Profile artifact** (PR #173 — iOS/iPadOS-only; see Phase 2 status above)
 
 **Goal:** Generate a `halos-ca.mobileconfig` next to `halos-ca.crt` on every cert publish, install it as a static asset the nginx sidecar can serve, and verify it loads on macOS/iOS as a root-CA profile.
 
@@ -376,7 +382,7 @@ Homarr dashboard renders the tile alongside other apps
 
 ### Unit 6 — `.deb` installer artifact
 
-- [ ] **Unit 6: Debian/Ubuntu `.deb` installer artifact**
+- [~] **Unit 6: Debian/Ubuntu `.deb` installer artifact — DROPPED** (a `.deb` runs arbitrary root maintainer scripts; the transparent `cp` + `update-ca-certificates` CLI path is preferred. See Phase 2 status above.)
 
 **Goal:** Generate a tiny `.deb` whose postinst drops the active CA into `/usr/local/share/ca-certificates/halos-ca.crt` and runs `update-ca-certificates`, rotating alongside the CA via `halos-manage-certs`. Same trust mechanism #158 uses on the device itself, packaged for remote Linux clients.
 
@@ -419,7 +425,7 @@ Homarr dashboard renders the tile alongside other apps
 
 ### Unit 7 — Landing page enhancement (Phase 2)
 
-- [ ] **Unit 7: Landing page enhancement — installer-led flows on Apple and Debian**
+- [x] **Unit 7: Landing page enhancement — Apple flows** (PR #173; iOS leads with the profile, macOS stays on the raw `.crt`. The Debian `.deb` portion is moot — Unit 6 dropped.)
 
 **Goal:** Update the Phase 1 landing page to add `.mobileconfig` download buttons on the macOS and iOS sections and a `.deb` download button on the Linux section's Debian/Ubuntu subsection. The bare-`.crt` paths are demoted to "Advanced" subsections (preserved, not removed). Other OS sections (Android, Windows, Linux non-Debian) remain Phase-1 unchanged.
 

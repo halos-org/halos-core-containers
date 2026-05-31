@@ -118,6 +118,7 @@ _domain_file() { printf '%s' "$1/data/traefik/certs/.domain"; }
 _auto_ca_crt() { printf '%s' "$1/data/halos-core-containers/certs/ca/ca.crt"; }
 _auto_ca_key() { printf '%s' "$1/data/halos-core-containers/certs/ca/ca.key"; }
 _public_ca() { printf '%s' "$1/data/halos-core-containers/certs/public/halos-ca.crt"; }
+_public_mobileconfig() { printf '%s' "$1/data/halos-core-containers/certs/public/halos-ca.mobileconfig"; }
 _cockpit_override() { printf '%s' "$1/cockpit-certs/99-halos.cert"; }
 _traefik_tls_config() { printf '%s' "$1/traefik-dynamic/tls-default.yml"; }
 
@@ -135,7 +136,24 @@ test_first_boot_bootstrap_creates_all_artifacts() {
     assert_file "$(_key_file "$d")" "leaf key" || return 1
     assert_file "$(_domain_file "$d")" "sentinel" || return 1
     assert_file "$(_public_ca "$d")" "public CA copy" || return 1
+    assert_file "$(_public_mobileconfig "$d")" "public .mobileconfig" || return 1
     assert_file "$(_cockpit_override "$d")" "cockpit override" || return 1
+}
+
+test_first_boot_publishes_valid_mobileconfig() {
+    # The published .mobileconfig must be a well-formed root-CA profile naming
+    # this device. Confirms the aux publish step is wired after the public-CA
+    # publish and that it embeds the resolved hostname.
+    local d
+    d=$(new_scratch mobileconfig)
+    run_script "$d" >/dev/null
+    local mc; mc=$(_public_mobileconfig "$d")
+    assert_file "$mc" ".mobileconfig" || return 1
+    grep -q 'com.apple.security.root' "$mc" || { echo "missing root payload type"; return 1; }
+    # new_scratch writes "fixture.test" as the canonical hostname; assert the
+    # resolved domain was threaded all the way into PayloadDisplayName so a
+    # dropped hostname arg (which would render "HaLOS Device CA ()") is caught.
+    grep -q 'HaLOS Device CA (fixture.test)' "$mc" || { echo "resolved hostname not embedded in PayloadDisplayName"; return 1; }
 }
 
 test_idempotent_rerun_preserves_leaf_and_sentinel() {
@@ -712,6 +730,7 @@ EOF
 # ---------------------------------------------------------------------------
 
 run_test test_first_boot_bootstrap_creates_all_artifacts
+run_test test_first_boot_publishes_valid_mobileconfig
 run_test test_idempotent_rerun_preserves_leaf_and_sentinel
 run_test test_hostname_change_triggers_leaf_only_resign
 run_test test_renewal_threshold_triggers_leaf_only_resign

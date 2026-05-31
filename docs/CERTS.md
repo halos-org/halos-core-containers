@@ -172,10 +172,52 @@ steps on every platform — Apple's *Certificate Trust Settings* toggle,
 macOS *Always Trust*, Android's browser-only trust, and the Firefox NSS
 store all need an explicit trust action beyond the install.
 
-The download button points at `/ca/halos-ca.crt`. Per-platform carrier
-artifacts (`.mobileconfig` for Apple, `.deb` for Debian/Ubuntu) are tracked
-separately and will replace the raw `.crt` link in their respective sections
-as they land.
+The page's generic download button points at `/ca/halos-ca.crt`. The iOS/iPadOS
+section leads with the Apple configuration profile below; macOS, Android, Linux,
+and Windows use the raw `.crt`. The Debian/Ubuntu `.deb` carrier is tracked
+separately and will slot into the Linux section as it lands.
+
+**Why the profile is iOS-only, not macOS.** On macOS (Ventura and later) a root
+delivered by a manually-installed configuration profile is *not* trusted for SSL
+automatically, the cert does not appear in Keychain Access, and macOS has no
+iOS-style *Certificate Trust Settings* toggle — so there is no way to grant the
+profile-delivered root SSL trust. The raw `.crt` installed into the System
+keychain, where the operator sets *Always Trust*, is the only working macOS path.
+iOS is different: it exposes *Settings → General → About → Certificate Trust
+Settings*, and the profile avoids the Files-app routing that breaks the raw-`.crt`
+download there (see issue #169). References:
+[Apple Developer Forums 724327](https://developer.apple.com/forums/thread/724327).
+
+### Apple configuration profile (`.mobileconfig`)
+
+`halos-manage-certs` generates `halos-ca.mobileconfig` next to `halos-ca.crt`
+on every run (helper `halos_ca_publish_mobileconfig` in `lib-ca.sh`, aux-failure
+semantics — a generation failure logs WARN and never blocks cert management).
+The sidecar serves it at:
+
+    https://<host>/ca/halos-ca.mobileconfig
+
+| Header         | Value                              |
+|----------------|------------------------------------|
+| `Content-Type` | `application/x-apple-aspen-config` |
+
+Unlike the `.crt`, the profile is served **without** `Content-Disposition:
+attachment`. On iOS Safari `attachment` routes the file to the Files app and
+the profile installer never fires (#169); serving the aspen MIME inline makes
+Safari show the *Profile Downloaded* install prompt. The landing-page link is a
+plain anchor with no `download` attribute for the same reason.
+
+The profile carries a single `com.apple.security.root` payload with the active
+CA's DER bytes, named `HaLOS Device CA (<hostname>)` so devices are
+distinguishable in a fleet's Profiles list. It is **unsigned** (signing needs an
+Apple Developer ID we don't own) — installs fine with a cosmetic "Not Verified"
+notice. Profile identifiers and UUIDs are fixed constants, so a CA rotation
+replaces the existing profile instead of stacking a duplicate.
+
+Install is **not** trust: macOS Sequoia / iOS 17-18 still require a separate
+trust action after install (Keychain Access "Always Trust" on macOS, *Settings →
+General → About → Certificate Trust Settings* on iOS). The landing page is
+explicit about this.
 
 A dashboard tile (`assets/ca-download-tile.toml`, installed to
 `/etc/halos/webapps.d/ca-download.toml`) surfaces this page on the Homarr

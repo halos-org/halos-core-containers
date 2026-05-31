@@ -111,6 +111,18 @@ if ! halos_ca_publish_public "${HALOS_CA_ACTIVE_CRT}" "${PUBLIC_CA_DIR}"; then
     echo "WARNING: failed to refresh public CA copy at ${PUBLIC_CA_DIR}/halos-ca.crt; the /halos-ca.crt download endpoint may serve stale or no CA until the next successful run." >&2
 fi
 
+# Generate the Apple Configuration Profile (.mobileconfig) carrying the active
+# CA next to the public PEM. Served by the ca-download sidecar at
+# /ca/halos-ca.mobileconfig for iOS/iPadOS, where the raw-.crt download is
+# routed to the Files app (#169); macOS uses the .crt instead. The CN-hostname
+# names the profile per-device in the Profiles list.
+#
+# Auxiliary: failure does NOT abort. The helper preserves any previous copy, so
+# the sidecar keeps serving the old profile until the next successful run.
+if ! halos_ca_publish_mobileconfig "${HALOS_CA_ACTIVE_CRT}" "${PUBLIC_CA_DIR}" "${HALOS_DOMAIN}"; then
+    echo "WARNING: failed to refresh Apple .mobileconfig at ${PUBLIC_CA_DIR}/halos-ca.mobileconfig; the /ca/halos-ca.mobileconfig endpoint may serve stale or no profile until the next successful run." >&2
+fi
+
 # Explicit guard: `set -e` does NOT abort on command-substitution failure
 # in an assignment. Without it, a corrupt CA silently yields CA_FINGERPRINT=""
 # and feeds a malformed sentinel into downstream comparison — an infinite

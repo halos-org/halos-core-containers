@@ -45,6 +45,10 @@ trap cleanup EXIT
 # not the PEM itself.
 mkdir -p "$TMP/public"
 printf -- '-----BEGIN CERTIFICATE-----\ndummy\n-----END CERTIFICATE-----\n' > "$TMP/public/halos-ca.crt"
+# Dummy profile bytes — content irrelevant; the test asserts MIME + the absence
+# of an attachment disposition (what lets iOS open the profile installer rather
+# than the Files app, #169), not the plist itself.
+printf '<?xml version="1.0"?><plist></plist>\n' > "$TMP/public/halos-ca.mobileconfig"
 
 # Mirror the docker-compose mount layout, including the nested /srv/landing
 # mount under the read-only /srv parent — this is the layout that ships.
@@ -80,6 +84,13 @@ hdr() { curl -sI "$1" | tr -d '\r' | awk -v h="$2" 'BEGIN{IGNORECASE=1} $1==h":"
 check "GET /ca/halos-ca.crt status"        "200" "$(code "$BASE/ca/halos-ca.crt")"
 check "GET /ca/halos-ca.crt content-type"  "application/x-x509-ca-cert" "$(hdr "$BASE/ca/halos-ca.crt" Content-Type)"
 check "GET /ca/halos-ca.crt disposition"   'attachment; filename="halos-ca.crt"' "$(hdr "$BASE/ca/halos-ca.crt" Content-Disposition)"
+
+# /ca/halos-ca.mobileconfig — the Apple profile carrier.
+check "GET /ca/halos-ca.mobileconfig status"       "200" "$(code "$BASE/ca/halos-ca.mobileconfig")"
+check "GET /ca/halos-ca.mobileconfig content-type" "application/x-apple-aspen-config" "$(hdr "$BASE/ca/halos-ca.mobileconfig" Content-Type)"
+# Load-bearing: serving the profile inline (no attachment) is what lets iOS
+# Safari hand it to the profile installer instead of the Files app (#169).
+check "GET /ca/halos-ca.mobileconfig no attachment" "" "$(hdr "$BASE/ca/halos-ca.mobileconfig" Content-Disposition)"
 
 # Bare /ca — canonical-trailing-slash redirect to /ca/ (so it doesn't fall
 # through to the homarr catch-all and miss the landing page).
