@@ -126,9 +126,9 @@
         <summary>macOS</summary>
         <ol>
           <li>Click <strong>Download</strong> above. <code>halos-ca.crt</code> lands in Downloads.</li>
-          <li>Double-click the file. Keychain Access opens — add it to the <strong>login</strong> keychain.</li>
-          <li>In Keychain Access, find the HaLOS CA under <em>Certificates</em> and double-click it.</li>
-          <li>Expand <strong>Trust</strong> and set <em>When using this certificate</em> to <strong>Always Trust</strong>. Close the window and enter your password when prompted. <span class="caveat">This is the mandatory trust step — adding the certificate without it leaves the warnings in place.</span></li>
+          <li>Double-click the file. Keychain Access opens and adds the certificate to the <strong>System</strong> keychain (if it asks which keychain, choose System); enter an admin password if prompted.</li>
+          <li>It's installed but not yet trusted. In Keychain Access, find the HaLOS CA under <strong>System</strong> ▸ <em>Certificates</em> and double-click it.</li>
+          <li>Expand <strong>Trust</strong> and set <em>When using this certificate</em> to <strong>Always Trust</strong>. Close the window and authenticate. <span class="caveat">This trust step is mandatory and separate from the install — without it the warnings stay.</span></li>
           <li>Quit and reopen your browser.</li>
         </ol>
       </details>
