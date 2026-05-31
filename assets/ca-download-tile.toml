@@ -1,0 +1,25 @@
+# HaLOS device-trust install page — Homarr dashboard registry entry.
+# Installed to /etc/halos/webapps.d/ca-download.toml; read by
+# homarr-container-adapter and synced onto the default board.
+
+name = "Install device trust"
+# Path-only URL: resolves against whatever hostname the user is on, so the
+# tile works over mDNS, VPN FQDN, or DHCP-DNS. Trailing slash matches the
+# canonical landing path the sidecar serves (a bare /ca would 308 to /ca/),
+# consistent with the other registry tiles.
+url = "/ca/"
+description = "Trust this device's certificate to remove browser warnings"
+icon_url = "/usr/share/pixmaps/halos-ca-download.svg"
+category = "System"
+visible = true
+
+# External link: no container backs this path directly (the ca-download
+# sidecar is fronted by Traefik), so skip container health tracking.
+[type]
+external = true
+
+[layout]
+# Utility band: present and discoverable, below the primary app tiles.
+priority = 70
+width = 1
+height = 1

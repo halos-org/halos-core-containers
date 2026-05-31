@@ -95,6 +95,10 @@ case "$(hdr "$BASE/ca/" Content-Type)" in text/html*) ct_ok=1 ;; *) ct_ok=0 ;; e
 check "GET /ca/ is text/html"              "1" "$ct_ok"
 case "$(curl -s "$BASE/ca/")" in *"HaLOS device trust"*) body_ok=1 ;; *) body_ok=0 ;; esac
 check "GET /ca/ serves landing body"       "1" "$body_ok"
+# Per-OS walkthrough *content* (the placeholder-regression guard) is asserted
+# in tests/test_landing_content.py, which reads the HTML directly and runs in
+# CI without Docker — this Docker-gated suite skips entirely in the trixie CI
+# container, so content checks must not live here.
 
 # /halos-ca.crt — moved; 410 Gone with a canonical hint.
 check "GET /halos-ca.crt status"           "410" "$(code "$BASE/halos-ca.crt")"

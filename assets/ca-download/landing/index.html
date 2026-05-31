@@ -1,25 +1,210 @@
 <!DOCTYPE html>
 <!--
-  Placeholder landing page (Unit 1). Replaced in Unit 2 with the per-OS
-  CA-trust install walkthrough. Kept deliberately minimal: one heading, a
-  short explanation, and a direct link to the CA cert so the page is already
-  useful before the full UI lands.
+  Device CA-trust install walkthrough served at /ca/. Self-contained: inline
+  CSS and JS, no external assets, so it works on a freshly-flashed device with
+  no network. The download button points at /ca/halos-ca.crt today; per-OS
+  carrier artifacts (.mobileconfig, .deb) will later replace it per section.
 -->
 <html lang="en">
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>HaLOS device trust</title>
+    <style>
+      :root {
+        color-scheme: light dark;
+        --fg: #1a2330;
+        --muted: #5a6675;
+        --bg: #f5f7fa;
+        --card: #ffffff;
+        --border: #d7dee7;
+        --accent: #273f65;
+        --accent-fg: #ffffff;
+        --warn-bg: #fff4e0;
+        --warn-border: #e0a23a;
+        --code-bg: #eef1f5;
+      }
+      @media (prefers-color-scheme: dark) {
+        :root {
+          --fg: #e6ebf2;
+          --muted: #9aa7b6;
+          --bg: #131922;
+          --card: #1b2430;
+          --border: #2c3a4a;
+          --accent: #5b7fb3;
+          --accent-fg: #0d1219;
+          --warn-bg: #2e2410;
+          --warn-border: #b3812d;
+          --code-bg: #0f151d;
+        }
+      }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        padding: 2rem 1rem 4rem;
+        background: var(--bg);
+        color: var(--fg);
+        font: 16px/1.55 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+      }
+      main { max-width: 44rem; margin: 0 auto; }
+      h1 { font-size: 1.7rem; margin: 0 0 0.5rem; }
+      .lede { color: var(--muted); margin: 0 0 1.5rem; }
+      .download {
+        display: inline-block;
+        background: var(--accent);
+        color: var(--accent-fg);
+        text-decoration: none;
+        font-weight: 600;
+        padding: 0.7rem 1.3rem;
+        border-radius: 0.5rem;
+      }
+      .download:focus-visible { outline: 3px solid var(--warn-border); outline-offset: 2px; }
+      .note {
+        background: var(--warn-bg);
+        border: 1px solid var(--warn-border);
+        border-radius: 0.5rem;
+        padding: 0.8rem 1rem;
+        margin: 1.5rem 0;
+      }
+      .note strong { display: block; margin-bottom: 0.25rem; }
+      details {
+        background: var(--card);
+        border: 1px solid var(--border);
+        border-radius: 0.5rem;
+        margin: 0.6rem 0;
+        padding: 0 1rem;
+      }
+      details[open] { padding-bottom: 0.6rem; }
+      summary {
+        cursor: pointer;
+        font-weight: 600;
+        padding: 0.85rem 0;
+        list-style: none;
+      }
+      summary::-webkit-details-marker { display: none; }
+      summary::before { content: "▸ "; color: var(--muted); }
+      details[open] > summary::before { content: "▾ "; }
+      ol { margin: 0.3rem 0 0.6rem; padding-left: 1.3rem; }
+      li { margin: 0.4rem 0; }
+      code, pre {
+        background: var(--code-bg);
+        border-radius: 0.3rem;
+        font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+        font-size: 0.9em;
+      }
+      code { padding: 0.1rem 0.35rem; }
+      pre { padding: 0.7rem 0.9rem; overflow-x: auto; margin: 0.4rem 0; }
+      .caveat { color: var(--muted); font-size: 0.92rem; }
+      footer { margin-top: 2.5rem; color: var(--muted); font-size: 0.88rem; }
+    </style>
   </head>
   <body>
-    <h1>HaLOS device trust</h1>
-    <p>
-      To remove the browser security warnings on this device, install its
-      certificate authority (CA) in your operating system's trust store.
-      Guided per-platform instructions are coming here shortly.
-    </p>
-    <p>
-      <a href="/ca/halos-ca.crt">Download the HaLOS CA certificate</a>
-    </p>
+    <main>
+      <h1>HaLOS device trust</h1>
+      <p class="lede">
+        This device secures its web services with its own certificate
+        authority (CA). Install the CA in your operating system's trust store
+        once, and the browser security warnings disappear for every service on
+        this device.
+      </p>
+
+      <p>
+        <a class="download" href="/ca/halos-ca.crt" download="halos-ca.crt"
+          >Download the HaLOS CA certificate</a
+        >
+      </p>
+
+      <div class="note">
+        <strong>Installing the certificate is not enough on its own.</strong>
+        Every platform needs a second, explicit "trust this for websites" step
+        after the file is installed — Apple, Android, and desktop browsers all
+        keep installation and trust separate. The per-platform steps below call
+        out exactly where that step is.
+      </div>
+
+      <details id="macos">
+        <summary>macOS</summary>
+        <ol>
+          <li>Click <strong>Download</strong> above. <code>halos-ca.crt</code> lands in Downloads.</li>
+          <li>Double-click the file. Keychain Access opens — add it to the <strong>login</strong> keychain.</li>
+          <li>In Keychain Access, find the HaLOS CA under <em>Certificates</em> and double-click it.</li>
+          <li>Expand <strong>Trust</strong> and set <em>When using this certificate</em> to <strong>Always Trust</strong>. Close the window and enter your password when prompted. <span class="caveat">This is the mandatory trust step — adding the certificate without it leaves the warnings in place.</span></li>
+          <li>Quit and reopen your browser.</li>
+        </ol>
+      </details>
+
+      <details id="ios">
+        <summary>iPhone / iPad (iOS &amp; iPadOS)</summary>
+        <ol>
+          <li>Tap <strong>Download</strong> above and allow the download. iOS shows <em>Profile Downloaded</em>.</li>
+          <li>Open <strong>Settings → General → VPN &amp; Device Management</strong>, tap the downloaded profile, then <strong>Install</strong> (enter your passcode).</li>
+          <li><strong>Then</strong> open <strong>Settings → General → About → Certificate Trust Settings</strong> and turn on the toggle for the HaLOS CA. <span class="caveat">iOS 17/18 require this separate toggle — installing the profile alone does not trust it for websites.</span></li>
+        </ol>
+      </details>
+
+      <details id="android">
+        <summary>Android</summary>
+        <ol>
+          <li>Tap <strong>Download</strong> above to save <code>halos-ca.crt</code>.</li>
+          <li>Open <strong>Settings → Security &amp; privacy → More security settings → Encryption &amp; credentials → Install a certificate → CA certificate</strong> (the exact path varies by vendor).</li>
+          <li>Accept the warning and pick the downloaded file.</li>
+        </ol>
+        <p class="caveat">Android trusts user-installed CAs in browsers only, not in apps — this is an Android design decision. You will get a green lock in Chrome or Brave; native apps still show warnings.</p>
+      </details>
+
+      <details id="linux">
+        <summary>Linux (Debian / Ubuntu)</summary>
+        <p>System trust store (Chromium, Chrome, curl, most apps):</p>
+        <ol>
+          <li>Download <code>halos-ca.crt</code>.</li>
+          <li>Install it:
+            <pre>sudo cp halos-ca.crt /usr/local/share/ca-certificates/halos-ca.crt
+sudo update-ca-certificates</pre>
+          </li>
+          <li>Restart Chromium or Chrome.</li>
+        </ol>
+        <p class="caveat">Firefox keeps its own certificate store: <strong>Settings → Privacy &amp; Security → Certificates → View Certificates → Authorities → Import</strong>, select <code>halos-ca.crt</code>, and trust it for websites.</p>
+      </details>
+
+      <details id="windows">
+        <summary>Windows</summary>
+        <ol>
+          <li>Download <code>halos-ca.crt</code>.</li>
+          <li>Double-click it and choose <strong>Install Certificate → Local Machine</strong> (accept the admin prompt).</li>
+          <li>Select <strong>Place all certificates in the following store → Trusted Root Certification Authorities</strong>, then finish.</li>
+          <li>Restart your browser.</li>
+        </ol>
+        <p class="caveat">Firefox on Windows also uses its own store — import the certificate as described in the Linux section.</p>
+      </details>
+
+      <footer>
+        Once the CA is trusted, every service on this device validates cleanly.
+        Decline the install and you can still click through the browser warning
+        on each service — but you will see it again for every new port.
+      </footer>
+    </main>
+
+    <script>
+      (function () {
+        var ua = navigator.userAgent || "";
+        var platform = navigator.platform || "";
+        var id;
+        if (/iPhone|iPad|iPod/.test(ua) || (platform === "MacIntel" && navigator.maxTouchPoints > 1)) {
+          id = "ios";
+        } else if (/Android/.test(ua)) {
+          id = "android";
+        } else if (/Mac/.test(platform) || /Mac OS X/.test(ua)) {
+          id = "macos";
+        } else if (/Win/.test(platform) || /Windows/.test(ua)) {
+          id = "windows";
+        } else if (/Linux|X11/.test(platform) || /Linux/.test(ua)) {
+          id = "linux";
+        }
+        if (id) {
+          var match = document.getElementById(id);
+          if (match) match.open = true;
+        }
+      })();
+    </script>
   </body>
 </html>
