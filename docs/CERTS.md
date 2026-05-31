@@ -159,6 +159,28 @@ sidecar that serves the file returns it with:
 OS-level certificate install dialog instead of rendering the PEM as plain
 text.
 
+### Trust-install landing page
+
+`https://<host>/ca/` serves a self-contained walkthrough
+(`assets/ca-download/landing/index.html`) that guides the operator through
+installing the `.crt` per platform: macOS, iOS/iPadOS, Android, Linux, and
+Windows. Client-side User-Agent detection auto-expands the section matching
+the visitor's OS; with JavaScript off, every section is visible. The page
+states up front that installing the certificate and trusting it are separate
+steps on every platform — Apple's *Certificate Trust Settings* toggle,
+macOS *Always Trust*, Android's browser-only trust, and the Firefox NSS
+store all need an explicit trust action beyond the install.
+
+The download button points at `/ca/halos-ca.crt`. Per-platform carrier
+artifacts (`.mobileconfig` for Apple, `.deb` for Debian/Ubuntu) are tracked
+separately and will replace the raw `.crt` link in their respective sections
+as they land.
+
+A dashboard tile (`assets/ca-download-tile.toml`, installed to
+`/etc/halos/webapps.d/ca-download.toml`) surfaces this page on the Homarr
+board via `homarr-container-adapter`. It is an external link (no health
+check) and always visible.
+
 ### Chicken-and-egg: trusting the CA before you trust the host
 
 The first download necessarily happens before the CA is trusted. Two

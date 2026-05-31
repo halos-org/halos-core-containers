@@ -72,6 +72,17 @@ override_dh_auto_install:
 	install -D -m 644 assets/hostnames.conf \
 		debian/$(PKG_NAME)/etc/halos/hostnames.conf
 
+	# CA-trust dashboard tile: registry entry read by homarr-container-adapter
+	# and its icon. The icon goes to /usr/share/pixmaps/ (served to Homarr as
+	# /icons/<name> — see homarr-container-adapter transform_icon_url), matching
+	# the cockpit.toml precedent. Both sources sit directly under assets/ (not
+	# assets/<dir>/), so the asset-tree glob above does not relocate them into
+	# the container-app lib dir.
+	install -D -m 644 assets/ca-download-tile.toml \
+		debian/$(PKG_NAME)/etc/halos/webapps.d/ca-download.toml
+	install -D -m 644 assets/halos-ca-download.svg \
+		debian/$(PKG_NAME)/usr/share/pixmaps/halos-ca-download.svg
+
 override_dh_auto_test:
 	# Skip tests - validated manually
 
