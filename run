@@ -53,6 +53,13 @@ function build {
 function deploy {
   #@ Deploy package to test server (usage: ./run deploy <target>)
   #@ Category: Deploy
+  # HAZARD: deploying a build whose version is LOWER than what's installed is a
+  # downgrade. The `apt-get -f install -y` below then resolves the broken
+  # reverse-dependencies by REMOVING the dependents — silently evicting e.g. the
+  # whole marine stack. Local `./run build` .debs carry the committed-changelog
+  # version (usually lower than the CI release already on the device), so prefer
+  # testing the CI package from trixie-unstable. See
+  # docs/solutions/2026-05-31-deploy-downgrade-evicts-dependent-packages.md
   local target="${1:-}"
 
   if [[ -z "$target" ]]; then
