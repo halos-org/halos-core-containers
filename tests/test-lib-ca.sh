@@ -1491,6 +1491,141 @@ test_sign_leaf_default_validity_uses_apple_compliant_days() {
     fi
 }
 
+# --- Adoption sentinel -----------------------------------------------------
+
+_stat_inode() { stat -c '%i' "$1" 2>/dev/null || stat -f '%i' "$1"; }
+
+# Write a CA cert with an arbitrary subject CN at <path>, for CN-classification
+# tests. Only the subject matters here; extensions are irrelevant to the
+# adoption classifier (it reads the CN, not basicConstraints).
+_mk_ca_with_cn() {
+    local crt="$1" cn="$2"
+    openssl req -x509 -nodes -newkey rsa:2048 -days 30 \
+        -keyout "${crt}.key" -out "$crt" -subj "/CN=${cn}" >/dev/null 2>&1
+}
+
+test_ensure_auto_sets_created_flag_on_bootstrap() {
+    local d="$TMPDIR_ROOT/case_adopt_flag_bootstrap"
+    mkdir -p "$d"
+    HALOS_CA_AUTO_CREATED=
+    halos_ca_ensure_auto "$d" || return 1
+    assert_eq "$HALOS_CA_AUTO_CREATED" "1" "bootstrap must set HALOS_CA_AUTO_CREATED=1" || return 1
+}
+
+test_ensure_auto_clears_created_flag_on_reuse() {
+    local d="$TMPDIR_ROOT/case_adopt_flag_reuse"
+    mkdir -p "$d"
+    halos_ca_ensure_auto "$d" || return 1
+    HALOS_CA_AUTO_CREATED=
+    halos_ca_ensure_auto "$d" || return 1
+    assert_eq "$HALOS_CA_AUTO_CREATED" "0" "healthy reuse must set HALOS_CA_AUTO_CREATED=0" || return 1
+}
+
+test_adoption_init_pending_for_new_ca() {
+    local d="$TMPDIR_ROOT/case_adopt_new"
+    mkdir -p "$d"
+    halos_ca_adoption_init "$d/adoption" "$d/ca.crt" "1" || return 1
+    assert_eq "$(cat "$d/adoption")" "pending" "new CA must init pending" || return 1
+}
+
+test_adoption_init_adopted_for_legacy_bare_cn() {
+    local d="$TMPDIR_ROOT/case_adopt_legacy"
+    mkdir -p "$d"
+    _mk_ca_with_cn "$d/ca.crt" "HaLOS Device CA" || { echo "fixture failed"; return 1; }
+    halos_ca_adoption_init "$d/adoption" "$d/ca.crt" "0" || return 1
+    assert_eq "$(cat "$d/adoption")" "adopted" "pre-existing bare-CN CA must init adopted (never orphan)" || return 1
+}
+
+test_adoption_init_pending_for_device_cn() {
+    local d="$TMPDIR_ROOT/case_adopt_device_cn"
+    mkdir -p "$d"
+    _mk_ca_with_cn "$d/ca.crt" "HaLOS Device CA (halosdev.local)" || { echo "fixture failed"; return 1; }
+    halos_ca_adoption_init "$d/adoption" "$d/ca.crt" "0" || return 1
+    assert_eq "$(cat "$d/adoption")" "pending" "pre-existing device-CN CA must init pending" || return 1
+}
+
+test_adoption_init_adopted_for_empty_hostname_cn() {
+    # A malformed device CN with an empty hostname must fall through to adopted
+    # (fail-safe), not be treated as a refresh-eligible device CN.
+    local d="$TMPDIR_ROOT/case_adopt_empty_cn"
+    mkdir -p "$d"
+    _mk_ca_with_cn "$d/ca.crt" "HaLOS Device CA ()" || { echo "fixture failed"; return 1; }
+    halos_ca_adoption_init "$d/adoption" "$d/ca.crt" "0" || return 1
+    assert_eq "$(cat "$d/adoption")" "adopted" "empty-hostname CN must init adopted" || return 1
+}
+
+test_adoption_init_replaces_directory_at_path() {
+    # Self-heal: if Docker created a directory at the sentinel path (a
+    # `compose up` that beat the cert-manager), init must replace it with a
+    # regular file rather than abort on the write.
+    local d="$TMPDIR_ROOT/case_adopt_dir_at_path"
+    mkdir -p "$d/adoption"
+    halos_ca_adoption_init "$d/adoption" "$d/ca.crt" "1" || return 1
+    [ -f "$d/adoption" ] || { echo "directory was not replaced with a regular file"; return 1; }
+    assert_eq "$(cat "$d/adoption")" "pending" "replaced sentinel must hold the computed value" || return 1
+}
+
+test_adoption_init_adopted_when_no_auto_ca() {
+    # Custom-CA mode: there is no auto-CA to classify, but the sentinel must
+    # still exist (the sidecar bind-mounts it). Fail-safe to adopted.
+    local d="$TMPDIR_ROOT/case_adopt_no_ca"
+    mkdir -p "$d"
+    halos_ca_adoption_init "$d/adoption" "$d/ca.crt" "0" || return 1
+    assert_eq "$(cat "$d/adoption")" "adopted" "absent auto-CA must init adopted" || return 1
+}
+
+test_adoption_init_preserves_existing() {
+    # An existing sentinel is load-bearing state; init must never overwrite it,
+    # even when told the CA was just created.
+    local d="$TMPDIR_ROOT/case_adopt_preserve"
+    mkdir -p "$d"
+    printf 'adopted' > "$d/adoption"
+    local inode_before; inode_before=$(_stat_inode "$d/adoption")
+    halos_ca_adoption_init "$d/adoption" "$d/ca.crt" "1" || return 1
+    assert_eq "$(cat "$d/adoption")" "adopted" "existing sentinel must be preserved" || return 1
+    assert_eq "$(_stat_inode "$d/adoption")" "$inode_before" "preserved sentinel must keep its inode" || return 1
+}
+
+test_adoption_init_creates_mode_0644() {
+    local d="$TMPDIR_ROOT/case_adopt_mode"
+    mkdir -p "$d"
+    halos_ca_adoption_init "$d/adoption" "$d/ca.crt" "1" || return 1
+    assert_eq "$(_stat_mode "$d/adoption")" "644" "sentinel must be created mode 0644" || return 1
+}
+
+test_adoption_init_creates_parent_dir() {
+    # Custom-CA mode may run before AUTO_CA_DIR exists; init must create it.
+    local d="$TMPDIR_ROOT/case_adopt_mkdir"
+    halos_ca_adoption_init "$d/certs/ca/adoption" "$d/certs/ca/ca.crt" "0" || return 1
+    [ -f "$d/certs/ca/adoption" ] || { echo "sentinel not created under missing parent"; return 1; }
+}
+
+test_is_adopted_pending_returns_false() {
+    local d="$TMPDIR_ROOT/case_isadopt_pending"
+    mkdir -p "$d"; printf 'pending' > "$d/adoption"
+    halos_ca_is_adopted "$d/adoption"; assert_eq "$?" "1" "pending must report not-adopted" || return 1
+}
+
+test_is_adopted_adopted_returns_true() {
+    local d="$TMPDIR_ROOT/case_isadopt_adopted"
+    mkdir -p "$d"; printf 'adopted' > "$d/adoption"
+    halos_ca_is_adopted "$d/adoption"; assert_eq "$?" "0" "adopted must report adopted" || return 1
+}
+
+test_is_adopted_unrecognized_returns_true() {
+    # Fail safe: a corrupt value must read as adopted so a CN refresh can't
+    # orphan an installed anchor.
+    local d="$TMPDIR_ROOT/case_isadopt_garbage"
+    mkdir -p "$d"; printf 'garbage' > "$d/adoption"
+    halos_ca_is_adopted "$d/adoption"; assert_eq "$?" "0" "unrecognized must read as adopted" || return 1
+}
+
+test_is_adopted_missing_returns_true() {
+    local d="$TMPDIR_ROOT/case_isadopt_missing"
+    mkdir -p "$d"
+    halos_ca_is_adopted "$d/no-such-file"; assert_eq "$?" "0" "missing sentinel must read as adopted" || return 1
+}
+
 # ---------------------------------------------------------------------------
 
 run_test test_ensure_auto_generates_files
@@ -1580,6 +1715,21 @@ run_test test_leaf_needs_renewal_when_approaching_expiry_returns_true
 run_test test_leaf_needs_renewal_when_well_outside_window_returns_false
 run_test test_leaf_needs_renewal_when_already_expired_returns_true
 run_test test_sign_leaf_default_validity_uses_apple_compliant_days
+run_test test_ensure_auto_sets_created_flag_on_bootstrap
+run_test test_ensure_auto_clears_created_flag_on_reuse
+run_test test_adoption_init_pending_for_new_ca
+run_test test_adoption_init_adopted_for_legacy_bare_cn
+run_test test_adoption_init_pending_for_device_cn
+run_test test_adoption_init_adopted_for_empty_hostname_cn
+run_test test_adoption_init_replaces_directory_at_path
+run_test test_adoption_init_adopted_when_no_auto_ca
+run_test test_adoption_init_preserves_existing
+run_test test_adoption_init_creates_mode_0644
+run_test test_adoption_init_creates_parent_dir
+run_test test_is_adopted_pending_returns_false
+run_test test_is_adopted_adopted_returns_true
+run_test test_is_adopted_unrecognized_returns_true
+run_test test_is_adopted_missing_returns_true
 
 echo
 echo "Passed: $PASSES, Failed: $FAILS"

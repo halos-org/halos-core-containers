@@ -118,6 +118,7 @@ _domain_file() { printf '%s' "$1/data/traefik/certs/.domain"; }
 _auto_ca_crt() { printf '%s' "$1/data/halos-core-containers/certs/ca/ca.crt"; }
 _auto_ca_key() { printf '%s' "$1/data/halos-core-containers/certs/ca/ca.key"; }
 _public_ca() { printf '%s' "$1/data/halos-core-containers/certs/public/halos-ca.crt"; }
+_adoption_file() { printf '%s' "$1/data/halos-core-containers/certs/ca/adoption"; }
 _public_mobileconfig() { printf '%s' "$1/data/halos-core-containers/certs/public/halos-ca.mobileconfig"; }
 _cockpit_override() { printf '%s' "$1/cockpit-certs/99-halos.cert"; }
 _traefik_tls_config() { printf '%s' "$1/traefik-dynamic/tls-default.yml"; }
@@ -727,6 +728,95 @@ EOF
     fi
 }
 
+# Seed a healthy, sign-capable auto-CA with an arbitrary subject CN at the
+# auto-CA path, simulating a CA that predates this device's current run (e.g. a
+# pre-feature upgrade). Long validity + CA:TRUE/keyCertSign so the script
+# reuses it (no rotation) and can sign the leaf with it.
+_seed_auto_ca_with_cn() {
+    local d="$1" cn="$2"
+    local ca_dir="$d/data/halos-core-containers/certs/ca"
+    mkdir -p "$ca_dir"
+    ( umask 077
+      openssl req -x509 -nodes -newkey rsa:2048 -days 3650 \
+        -keyout "$ca_dir/ca.key" -out "$ca_dir/ca.crt" \
+        -subj "/CN=${cn}" \
+        -addext "basicConstraints=critical,CA:TRUE,pathlen:0" \
+        -addext "keyUsage=critical,keyCertSign,cRLSign" >/dev/null 2>&1 )
+}
+
+test_first_boot_initializes_adoption_pending() {
+    # A freshly bootstrapped auto-CA is created this run → sentinel "pending"
+    # (CN-refresh-eligible until first download). The file must exist so the
+    # sidecar's bind mount finds a regular file.
+    local d
+    d=$(new_scratch adopt_first_boot)
+    run_script "$d" >/dev/null
+    assert_file "$(_adoption_file "$d")" "adoption sentinel" || return 1
+    assert_eq "$(cat "$(_adoption_file "$d")")" "pending" "first-boot sentinel must be pending" || return 1
+}
+
+test_legacy_bare_cn_ca_stamped_adopted() {
+    # Upgrade path: a pre-existing bare-CN auto-CA with no sentinel must be
+    # stamped "adopted" (frozen) so its already-distributed trust anchor is
+    # never orphaned by a CN refresh.
+    local d
+    d=$(new_scratch adopt_legacy)
+    _seed_auto_ca_with_cn "$d" "HaLOS Device CA" || { echo "seed failed"; return 1; }
+    run_script "$d" >/dev/null
+    assert_eq "$(cat "$(_adoption_file "$d")")" "adopted" "legacy bare-CN CA must be stamped adopted" || return 1
+    # Sanity: the seeded CA was reused, not rotated (else it wasn't really the
+    # legacy path). The leaf must verify against the seeded CA.
+    if ! openssl verify -CAfile "$(_auto_ca_crt "$d")" "$(_cert_file "$d")" >/dev/null 2>&1; then
+        echo "leaf must verify against the reused seeded CA"
+        return 1
+    fi
+}
+
+test_adoption_sentinel_preserved_on_rerun() {
+    # The sentinel is load-bearing state: an idempotent rerun must not reset a
+    # pending CA, nor a (hypothetically) adopted one.
+    local d
+    d=$(new_scratch adopt_rerun)
+    run_script "$d" >/dev/null
+    assert_eq "$(cat "$(_adoption_file "$d")")" "pending" "precondition: first run pending" || return 1
+    # Simulate a download having adopted the CA between runs.
+    printf 'adopted' > "$(_adoption_file "$d")"
+    run_script "$d" >/dev/null
+    assert_eq "$(cat "$(_adoption_file "$d")")" "adopted" "rerun must preserve adopted sentinel" || return 1
+}
+
+test_publish_public_failure_logs_error() {
+    # A failed public-CA publish is the only signal the served cert is missing
+    # (the sidecar healthcheck is liveness-only). It must log at ERROR and
+    # continue (aux failure), still producing the leaf.
+    local d
+    d=$(new_scratch publish_fail)
+    cat > "$d/stub-lib-ca.sh" <<EOF
+. "$LIB_CA"
+halos_ca_publish_public() {
+    echo "stub: simulating publish failure" >&2
+    return 1
+}
+EOF
+    local out
+    out=$(HALOS_ETC_DIR="$d/etc" \
+        HALOS_LIB_HOSTNAMES="$LIB_HOSTNAMES" \
+        HALOS_LIB_CA="$d/stub-lib-ca.sh" \
+        HALOS_CUSTOM_CA_DIR="$d/custom-ca" \
+        HALOS_COCKPIT_WS_CERTS_DIR="$d/cockpit-certs" \
+        HALOS_TRAEFIK_DYNAMIC_DIR="$d/traefik-dynamic" \
+        HALOS_HOSTNAMES_FILE="$d/hostnames.conf" \
+        PACKAGE_NAME="halos-core-containers" \
+        CONTAINER_DATA_ROOT="$d/data" \
+        bash "$SCRIPT" 2>&1) || { echo "script must not abort on publish failure; got:"; echo "$out"; return 1; }
+    if ! echo "$out" | grep -q "ERROR: failed to publish CA copy"; then
+        echo "expected ERROR-severity publish-failure line; got:"
+        echo "$out"
+        return 1
+    fi
+    assert_file "$(_cert_file "$d")" "leaf must still be produced after publish failure" || return 1
+}
+
 # ---------------------------------------------------------------------------
 
 run_test test_first_boot_bootstrap_creates_all_artifacts
@@ -750,6 +840,10 @@ run_test test_traefik_reload_skipped_on_idempotent_rerun
 run_test test_traefik_reload_skipped_when_dynamic_config_absent
 run_test test_traefik_reload_fires_on_renewal_threshold_resign
 run_test test_fingerprint_guard_exits_when_helper_fails
+run_test test_first_boot_initializes_adoption_pending
+run_test test_legacy_bare_cn_ca_stamped_adopted
+run_test test_adoption_sentinel_preserved_on_rerun
+run_test test_publish_public_failure_logs_error
 
 echo
 echo "Passed: $PASSES, Failed: $FAILS"

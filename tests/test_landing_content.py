@@ -12,7 +12,7 @@ from pathlib import Path
 import pytest
 
 REPO = Path(__file__).resolve().parent.parent
-HTML = (REPO / "assets" / "ca-download" / "landing" / "index.html").read_text()
+HTML = (REPO / "assets" / "ca-download" / "www" / "ca" / "index.html").read_text()
 
 
 @pytest.mark.parametrize("os_id", ["macos", "ios", "android", "linux", "windows"])

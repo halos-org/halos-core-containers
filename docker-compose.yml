@@ -188,10 +188,20 @@ services:
     # anchor for all services on this device.
     # Routed by Traefik (no host port published). prestart.sh copies the
     # active CA's PEM bytes into the mounted dir each run.
-    image: nginx:1.27-alpine
+    #
+    # busybox httpd (not nginx): the cert/profile endpoints are CGI scripts so
+    # a completed download can record CA adoption (freezing the auto-CA's CN)
+    # via an explicit sentinel write — a per-request side effect stock nginx
+    # cannot express. Digest-pinned for reproducible deploys.
+    image: busybox:1.37@sha256:9532d8c39891ca2ecde4d30d7710e01fb739c87a8b9299685c63704296b16028
     container_name: ca-download
     init: true
     restart: unless-stopped
+    # httpd: foreground (-f), plain :80 (Traefik fronts TLS), docroot /www,
+    # config /etc/httpd.conf. -u drops to nobody after binding :80; the
+    # adoption sentinel is chowned to 65534 so the CGI can rewrite it. Keep the
+    # uid in sync with HALOS_CA_DOWNLOAD_UID in assets/lib-ca.sh.
+    command: ["httpd", "-f", "-p", "80", "-u", "65534:65534", "-h", "/www", "-c", "/etc/httpd.conf"]
     volumes:
       # PACKAGE_NAME is normally injected by systemd via env.defaults
       # (debian/postinst writes it there). The :-halos-core-containers
@@ -199,23 +209,28 @@ services:
       # local dev with `docker compose config`) working with the canonical
       # path layout.
       - ${CONTAINER_DATA_ROOT}/${PACKAGE_NAME:-halos-core-containers}/certs/public:/srv:ro
-      - ./assets/ca-download/nginx.conf:/etc/nginx/nginx.conf:ro
-      # Landing page assets, served read-only under /ca/. Mounted as a sibling
-      # of /srv (NOT /srv/landing): /srv is itself a read-only bind mount, so
-      # Docker cannot create a nested mountpoint inside it.
-      - ./assets/ca-download/landing:/srv-landing:ro
+      # Docroot: static landing under /www/ca plus the cert/profile/410 CGI
+      # scripts at their public paths. Single read-only mount (busybox httpd
+      # has no alias/rewrite, so the tree mirrors the URL space exactly).
+      - ./assets/ca-download/www:/www:ro
+      - ./assets/ca-download/httpd.conf:/etc/httpd.conf:ro
+      # The single adoption sentinel, mounted as a FILE (not a directory)
+      # read-write. The CGI rewrites only this one file in place; it cannot
+      # create/delete anything else in certs/ca, and ca.key is never mounted.
+      # The cert-manager (halos-manage-certs.service, ordered Before= this
+      # stack) creates the file so Docker finds a regular file to bind here.
+      - ${CONTAINER_DATA_ROOT}/${PACKAGE_NAME:-halos-core-containers}/certs/ca/adoption:/adoption:rw
     healthcheck:
-      # Probe the actual served path so a missing or unreadable
-      # /srv/halos-ca.crt marks the container unhealthy (autoheal then
-      # restarts it). A bare /healthz probe stayed healthy while nginx
-      # 404'd the cert, which hid breakage from operators.
+      # Liveness only: a static /healthz, never the cert path. The former
+      # cert-presence probe could only detect a missing cert, not fix it (the
+      # cert is host-sourced, so an autoheal restart re-mounts the same missing
+      # file in a loop) and made Traefik 3.7 drop the container so /ca/ fell
+      # through to the homarr catch-all. A missing published cert is surfaced
+      # by halos-manage-certs at ERROR in the journal instead. Liveness-only
+      # also keeps the healthcheck off the cert CGI, so it cannot trip adoption.
       #
-      # Connect via 127.0.0.1 (not localhost): nginx:alpine resolves
-      # localhost to ::1 first, and our nginx.conf only `listen 80` on
-      # IPv4. localhost probes get ECONNREFUSED → container stays
-      # unhealthy → Traefik 3.7 filters unhealthy containers from
-      # discovery → endpoint silently unreachable behind a homarr 404.
-      test: ["CMD", "wget", "-q", "--spider", "http://127.0.0.1/ca/halos-ca.crt"]
+      # Connect via 127.0.0.1 (not localhost): httpd binds IPv4 :80 only.
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1/healthz"]
       interval: 10s
       timeout: 5s
       start_period: 30s

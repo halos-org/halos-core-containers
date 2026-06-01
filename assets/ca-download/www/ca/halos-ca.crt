@@ -1,0 +1,66 @@
+#!/bin/sh
+# CGI for /ca/halos-ca.crt — serve the active device CA as an installable
+# download, then record first external adoption. Run by busybox httpd via the
+# `*.crt:/bin/sh` suffix rule in httpd.conf.
+#
+# Adoption: the device's auto-CA may have its subject CN refreshed on a
+# hostname change, but only until the CA has been served at least once — after
+# that the CN is frozen so an already-installed trust anchor is never orphaned.
+# This script records that by flipping the adoption sentinel pending→adopted as
+# its LAST action, after the body is written. busybox httpd buffers CGI stdout,
+# so for a cert that fits one socket buffer (every real PEM does) the flip
+# effectively happens on serve, not on confirmed receipt — a mid-transfer
+# disconnect only aborts the flip for payloads larger than the buffer. That is
+# safe: premature adoption merely forgoes a future CN refresh, it never orphans.
+#
+# Paths default to the in-container mount points; overridable via env so the
+# script can be exercised directly in tests.
+set -u
+CA_CRT="${HALOS_CA_PUBLIC_CRT:-/srv/halos-ca.crt}"
+ADOPTION="${HALOS_ADOPTION_FILE:-/adoption}"
+
+emit_headers() {
+    printf 'Status: 200 OK\n'
+    printf 'Content-Type: application/x-x509-ca-cert\n'
+    # attachment triggers the OS/browser cert-install dialog rather than
+    # rendering the PEM as text.
+    printf 'Content-Disposition: attachment; filename="halos-ca.crt"\n'
+    printf '\n'
+}
+
+case "${REQUEST_METHOD:-GET}" in
+    GET) ;;
+    # HEAD returns metadata only: no body, and no adoption (it is not a
+    # completed download).
+    HEAD) emit_headers; exit 0 ;;
+    *)  printf 'Status: 405 Method Not Allowed\n'
+        printf 'Allow: GET, HEAD\n'
+        printf 'Content-Type: text/plain\n'
+        printf '\n'
+        printf 'Method not allowed\n'
+        exit 0 ;;
+esac
+
+# A missing published cert (publish step failed) is surfaced at ERROR by the
+# cert-manager, not here; serve a clean 503 rather than an empty 200, and do
+# not adopt.
+if [ ! -f "$CA_CRT" ]; then
+    printf 'Status: 503 Service Unavailable\n'
+    printf 'Content-Type: text/plain\n'
+    printf '\n'
+    printf 'CA temporarily unavailable\n'
+    exit 0
+fi
+
+emit_headers
+# Stream the cert. A failed write (broken pipe on a large-payload disconnect)
+# exits before the flip; small certs flush to the buffer and the flip runs.
+cat "$CA_CRT" || exit 0
+
+# Flip the sentinel in place (truncate + rewrite, same inode — the file is a
+# single-file bind mount pinned to its inode at container start, so an
+# inode-swapping tmp+mv would desync the cert-manager's view). Idempotent; an
+# unrecognized value is left untouched (read elsewhere as adopted, fail-safe).
+cur=$(cat "$ADOPTION" 2>/dev/null) || exit 0
+[ "$cur" = "pending" ] && printf 'adopted' > "$ADOPTION"
+exit 0

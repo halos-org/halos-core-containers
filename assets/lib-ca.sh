@@ -61,6 +61,18 @@ HALOS_CA_LEAF_VALIDITY_DAYS=824
 HALOS_CA_BACKDATE_HOURS=24
 HALOS_CA_SUBJECT="/CN=HaLOS Device CA"
 
+# Subject-CN prefix shared by the auto-CA's bare-legacy CN ("HaLOS Device CA")
+# and its device-identifying form ("HaLOS Device CA (<hostname>)"). Used to
+# classify a sentinel-less auto-CA at adoption-init time.
+HALOS_CA_SUBJECT_CN_PREFIX="HaLOS Device CA"
+
+# uid:gid the ca-download sidecar's busybox httpd drops to after binding :80
+# (docker-compose `httpd -u`). The adoption sentinel is chowned to this uid by
+# the cert-manager so the in-container CGI can rewrite it. 65534 = nobody.
+# Keep in sync with the `-u` value in docker-compose.yml's ca-download service.
+# shellcheck disable=SC2034  # consumed by halos-manage-certs, which sources this lib
+HALOS_CA_DOWNLOAD_UID=65534
+
 # --- Thresholds (remaining-validity gates for actions) ---
 
 # Re-sign the leaf when remaining validity drops below this. Sized so
@@ -214,8 +226,16 @@ halos_ca_leaf_needs_renewal() {
 # half-deleted CA would orphan any operator-installed trust anchor whose
 # matching key is still present. Operators must explicitly delete both files
 # (or none) for the regen escape hatch to fire.
+#
+# Sets HALOS_CA_AUTO_CREATED on return: "1" when this call bootstrapped or
+# rotated the CA (a brand-new key/cert is now on disk), "0" when an existing
+# healthy CA was reused unchanged. Read by halos_ca_adoption_init to decide a
+# sentinel-less CA's initial state — a CA born this run starts "pending"
+# (refresh-eligible), a pre-existing one is classified by its CN.
 halos_ca_ensure_auto() {
     local out_dir="$1"
+    # shellcheck disable=SC2034
+    HALOS_CA_AUTO_CREATED=0
     if [ -z "$out_dir" ]; then
         echo "halos_ca_ensure_auto: output_dir required" >&2
         return 2
@@ -271,6 +291,8 @@ halos_ca_ensure_auto() {
     chmod 644 "$ca_crt_new"
     mv "$ca_key_new" "$ca_key"
     mv "$ca_crt_new" "$ca_crt"
+    # shellcheck disable=SC2034
+    HALOS_CA_AUTO_CREATED=1
 }
 
 # halos_ca_validate_pair <ca_crt> <ca_key>
@@ -732,6 +754,94 @@ halos_ca_publish_public() {
         echo "halos_ca_publish_public: failed to mv $public_new to $public_file; previous copy (if any) is preserved" >&2
         return 1
     fi
+}
+
+# _halos_ca_subject_cn <crt_path>
+# Print the subject CN of <crt_path> (empty on parse failure). RFC2253 name
+# format renders a lone CN as "CN=<value>" with no spacing, so the trailing
+# capture stops at the first RDN separator.
+_halos_ca_subject_cn() {
+    local crt="$1"
+    [ -f "$crt" ] || return 1
+    openssl x509 -in "$crt" -noout -subject -nameopt RFC2253 2>/dev/null \
+        | sed -n 's/.*CN=\([^,]*\).*/\1/p'
+}
+
+# halos_ca_adoption_init <adoption_file> <auto_ca_crt> <auto_created>
+# Ensure the adoption sentinel exists with a correct initial value, so the
+# ca-download sidecar's bind mount of this single file always finds a regular
+# file (a missing mount source makes Docker create a directory there). Existing
+# sentinels are preserved untouched — the value is load-bearing state, written
+# once and thereafter only flipped pending→adopted by a real download.
+#
+# Initial value when the sentinel is absent:
+#   - <auto_created>=1 (the CA was just bootstrapped/rotated this run) → "pending"
+#   - else, classify the auto-CA by CN:
+#       bare legacy CN "HaLOS Device CA"            → "adopted"  (never orphan
+#                                                      a pre-feature trust anchor)
+#       device-identifying "HaLOS Device CA (...)"  → "pending"
+#       anything else / no auto-CA (custom mode)    → "adopted"  (fail-safe)
+#
+# Created mode 0644. The caller chowns it to HALOS_CA_DOWNLOAD_UID so the
+# in-container CGI can rewrite it.
+halos_ca_adoption_init() {
+    local adoption_file="$1" auto_ca_crt="$2" auto_created="${3:-0}"
+    if [ -z "$adoption_file" ]; then
+        echo "halos_ca_adoption_init: <adoption_file> required" >&2
+        return 2
+    fi
+    # Preserve an existing regular-file sentinel verbatim (only a download may
+    # change it). A non-regular file at the path — e.g. a directory Docker
+    # created when a `compose up` beat the cert-manager — is removed and
+    # recreated, since the whole purpose here is to guarantee a regular file
+    # exists before the sidecar binds it (otherwise the bind fails and the
+    # cert-manager would abort on the write below, never recovering).
+    if [ -f "$adoption_file" ]; then
+        return 0
+    elif [ -e "$adoption_file" ]; then
+        if ! rm -rf "$adoption_file"; then
+            echo "halos_ca_adoption_init: $adoption_file exists and is not a regular file, and could not be removed" >&2
+            return 1
+        fi
+    fi
+
+    local value="adopted"
+    if [ "$auto_created" = "1" ]; then
+        value="pending"
+    elif [ -n "$auto_ca_crt" ] && [ -f "$auto_ca_crt" ]; then
+        local cn
+        cn="$(_halos_ca_subject_cn "$auto_ca_crt")"
+        if [ "$cn" = "$HALOS_CA_SUBJECT_CN_PREFIX" ]; then
+            value="adopted"
+        elif [[ "$cn" == "$HALOS_CA_SUBJECT_CN_PREFIX ("?*")" ]]; then
+            # ?* requires at least one char between the parens, so a malformed
+            # empty-hostname CN "HaLOS Device CA ()" falls through to adopted.
+            value="pending"
+        fi
+    fi
+
+    if ! mkdir -p "$(dirname "$adoption_file")"; then
+        echo "halos_ca_adoption_init: failed to mkdir for $adoption_file" >&2
+        return 1
+    fi
+    if ! printf '%s' "$value" > "$adoption_file"; then
+        echo "halos_ca_adoption_init: failed to write $adoption_file" >&2
+        return 1
+    fi
+    chmod 0644 "$adoption_file" 2>/dev/null || true
+}
+
+# halos_ca_is_adopted <adoption_file>
+# Return 0 (adopted / frozen) unless the sentinel reads exactly "pending", in
+# which case return 1 (refresh-eligible). A missing or unrecognized value is
+# treated as adopted — fail safe, so a corrupt sentinel never triggers a
+# CN-refresh that could orphan an installed anchor.
+halos_ca_is_adopted() {
+    local adoption_file="$1"
+    local cur
+    cur="$(cat "$adoption_file" 2>/dev/null)" || return 0
+    [ "$cur" = "pending" ] && return 1
+    return 0
 }
 
 # _halos_uuid_from_hex <>=32-hex-chars>
