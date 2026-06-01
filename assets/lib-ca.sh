@@ -232,8 +232,14 @@ halos_ca_leaf_needs_renewal() {
 # healthy CA was reused unchanged. Read by halos_ca_adoption_init to decide a
 # sentinel-less CA's initial state — a CA born this run starts "pending"
 # (refresh-eligible), a pre-existing one is classified by its CN.
+#
+# <hostname> (optional) makes the subject CN device-identifying:
+# "HaLOS Device CA (<hostname>)" so devices are distinguishable in trust stores.
+# Omitted/empty yields the bare legacy CN; callers that don't care (tests) can
+# keep the one-arg form. Only affects a CA this call generates — an existing
+# healthy CA is reused with whatever CN it already has.
 halos_ca_ensure_auto() {
-    local out_dir="$1"
+    local out_dir="$1" hostname="${2:-}"
     # shellcheck disable=SC2034
     HALOS_CA_AUTO_CREATED=0
     if [ -z "$out_dir" ]; then
@@ -269,6 +275,11 @@ halos_ca_ensure_auto() {
     local not_before
     not_before=$(_halos_ca_not_before)
 
+    # Device-identifying subject CN when a hostname is supplied; bare legacy CN
+    # otherwise. The parenthetical form matches the .mobileconfig display string.
+    local subject="$HALOS_CA_SUBJECT"
+    [ -n "$hostname" ] && subject="/CN=${HALOS_CA_SUBJECT_CN_PREFIX} (${hostname})"
+
     # umask 077 ensures the openssl-created key file is 0600 from inception,
     # closing the race window between cert creation and chmod where another
     # local UID could open the key fd while it was world-readable.
@@ -277,7 +288,7 @@ halos_ca_ensure_auto() {
             -not_before "$not_before" \
             -keyout "$ca_key_new" \
             -out "$ca_crt_new" \
-            -subj "$HALOS_CA_SUBJECT" \
+            -subj "$subject" \
             -addext "basicConstraints=critical,CA:TRUE,pathlen:0" \
             -addext "keyUsage=critical,keyCertSign,cRLSign" \
             -addext "subjectKeyIdentifier=hash" \
@@ -356,10 +367,14 @@ halos_ca_validate_pair() {
     fi
 }
 
-# halos_ca_select_active <custom_dir> <auto_dir> <symlink_path>
+# halos_ca_select_active <custom_dir> <auto_dir> <symlink_path> [hostname]
 # Picks the active device CA: operator-supplied custom (when present + valid)
 # wins; otherwise the auto-CA at <auto_dir> is ensured and used. Updates
 # <symlink_path> to point at the active cert (atomic via `ln -sfn`).
+#
+# [hostname] is threaded to the auto branch only, so a freshly generated
+# auto-CA carries a device-identifying CN. Custom CAs are never touched — the
+# operator owns their CN.
 #
 # Sets globals on success:
 #   HALOS_CA_ACTIVE_CRT   path to active CA cert
@@ -376,7 +391,7 @@ halos_ca_validate_pair() {
 # dropping a custom CA can SSH to diagnose, and silent fallback would
 # invalidate their installed trust anchor without warning.
 halos_ca_select_active() {
-    local custom_dir="$1" auto_dir="$2" symlink_path="$3"
+    local custom_dir="$1" auto_dir="$2" symlink_path="$3" hostname="${4:-}"
     if [ -z "$custom_dir" ] || [ -z "$auto_dir" ] || [ -z "$symlink_path" ]; then
         echo "halos_ca_select_active: <custom_dir> <auto_dir> <symlink_path> all required" >&2
         return 2
@@ -413,7 +428,7 @@ halos_ca_select_active() {
         active_key="$custom_key"
         active_mode="custom"
     else
-        halos_ca_ensure_auto "$auto_dir" || return $?
+        halos_ca_ensure_auto "$auto_dir" "$hostname" || return $?
         active_crt="${auto_dir}/ca.crt"
         active_key="${auto_dir}/ca.key"
         active_mode="auto"
@@ -761,10 +776,26 @@ halos_ca_publish_public() {
 # format renders a lone CN as "CN=<value>" with no spacing, so the trailing
 # capture stops at the first RDN separator.
 _halos_ca_subject_cn() {
-    local crt="$1"
+    local crt="$1" subject
     [ -f "$crt" ] || return 1
-    openssl x509 -in "$crt" -noout -subject -nameopt RFC2253 2>/dev/null \
-        | sed -n 's/.*CN=\([^,]*\).*/\1/p'
+    # Capture openssl separately so its failure propagates — a pipe into sed
+    # would mask it behind sed's always-zero exit.
+    subject="$(openssl x509 -in "$crt" -noout -subject -nameopt RFC2253 2>/dev/null)" || return 1
+    printf '%s\n' "$subject" | sed -n 's/.*CN=\([^,]*\).*/\1/p'
+}
+
+# halos_ca_cn_hostname <crt_path>
+# Print the hostname embedded in a device-identifying CN
+# "HaLOS Device CA (<hostname>)". Prints nothing for a bare legacy CN or any
+# other subject — so a bare-CN CA always "differs" from a real hostname, which
+# is what lets a reset/Unit-1-era pending CA upgrade to a device CN on refresh.
+halos_ca_cn_hostname() {
+    local crt="$1" cn
+    cn="$(_halos_ca_subject_cn "$crt")" || return 0
+    if [[ "$cn" == "$HALOS_CA_SUBJECT_CN_PREFIX ("?*")" ]]; then
+        cn="${cn#"$HALOS_CA_SUBJECT_CN_PREFIX ("}"
+        printf '%s' "${cn%)}"
+    fi
 }
 
 # halos_ca_adoption_init <adoption_file> <auto_ca_crt> <auto_created>

@@ -1626,6 +1626,73 @@ test_is_adopted_missing_returns_true() {
     halos_ca_is_adopted "$d/no-such-file"; assert_eq "$?" "0" "missing sentinel must read as adopted" || return 1
 }
 
+# --- Device-identifying CN -------------------------------------------------
+
+_ca_cn() { openssl x509 -in "$1" -noout -subject -nameopt RFC2253 | sed -n 's/.*CN=\([^,]*\).*/\1/p'; }
+
+test_ensure_auto_embeds_hostname_in_cn() {
+    local d="$TMPDIR_ROOT/case_cn_hostname"
+    mkdir -p "$d"
+    halos_ca_ensure_auto "$d" "halosdev.local" || return 1
+    assert_eq "$(_ca_cn "$d/ca.crt")" "HaLOS Device CA (halosdev.local)" "CN must embed hostname" || return 1
+}
+
+test_ensure_auto_bare_cn_without_hostname() {
+    # Back-compat: the one-arg form keeps the bare legacy CN.
+    local d="$TMPDIR_ROOT/case_cn_bare"
+    mkdir -p "$d"
+    halos_ca_ensure_auto "$d" || return 1
+    assert_eq "$(_ca_cn "$d/ca.crt")" "HaLOS Device CA" "no-hostname form must use bare CN" || return 1
+}
+
+test_ensure_auto_cn_round_trips() {
+    # cn_hostname must exactly invert the CN the generator wrote, or the
+    # refresh gate would churn (regenerate every run).
+    local d="$TMPDIR_ROOT/case_cn_roundtrip"
+    mkdir -p "$d"
+    halos_ca_ensure_auto "$d" "halosdev.local" || return 1
+    assert_eq "$(halos_ca_cn_hostname "$d/ca.crt")" "halosdev.local" "cn_hostname must round-trip" || return 1
+}
+
+test_cn_hostname_empty_for_bare_cn() {
+    local d="$TMPDIR_ROOT/case_cn_host_bare"
+    mkdir -p "$d"
+    _mk_ca_with_cn "$d/ca.crt" "HaLOS Device CA" || { echo "fixture failed"; return 1; }
+    assert_eq "$(halos_ca_cn_hostname "$d/ca.crt")" "" "bare CN must yield empty hostname" || return 1
+}
+
+test_cn_hostname_empty_for_custom_cn() {
+    local d="$TMPDIR_ROOT/case_cn_host_custom"
+    mkdir -p "$d"
+    _mk_ca_with_cn "$d/ca.crt" "Acme Corp Root" || { echo "fixture failed"; return 1; }
+    assert_eq "$(halos_ca_cn_hostname "$d/ca.crt")" "" "non-device CN must yield empty hostname" || return 1
+}
+
+test_select_active_threads_hostname_to_auto() {
+    local d="$TMPDIR_ROOT/case_select_hostname"
+    mkdir -p "$d/custom" "$d/auto"
+    halos_ca_select_active "$d/custom" "$d/auto" "$d/serving-ca.crt" "halosdev.local" || return 1
+    assert_eq "$HALOS_CA_ACTIVE_MODE" "auto" "must be auto mode" || return 1
+    assert_eq "$(_ca_cn "$d/auto/ca.crt")" "HaLOS Device CA (halosdev.local)" "auto CA must carry device CN" || return 1
+}
+
+test_select_active_custom_cn_untouched_with_hostname() {
+    # R7: a hostname arg must not rewrite a custom CA's operator-owned CN.
+    local d="$TMPDIR_ROOT/case_select_custom_cn"
+    mkdir -p "$d/custom" "$d/auto"
+    ( umask 077
+      openssl req -x509 -nodes -newkey rsa:2048 -days 365 \
+        -keyout "$d/custom/ca.key" -out "$d/custom/ca.crt" \
+        -subj "/CN=Acme Operator CA" \
+        -addext "basicConstraints=critical,CA:TRUE,pathlen:0" \
+        -addext "keyUsage=critical,keyCertSign,cRLSign" >/dev/null 2>&1 )
+    chmod 0700 "$d/custom"
+    halos_ca_select_active "$d/custom" "$d/auto" "$d/serving-ca.crt" "halosdev.local" || return 1
+    assert_eq "$HALOS_CA_ACTIVE_MODE" "custom" "must be custom mode" || return 1
+    assert_eq "$(_ca_cn "$d/custom/ca.crt")" "Acme Operator CA" "custom CN must be untouched" || return 1
+    [ ! -f "$d/auto/ca.crt" ] || { echo "auto CA must not be generated in custom mode"; return 1; }
+}
+
 # ---------------------------------------------------------------------------
 
 run_test test_ensure_auto_generates_files
@@ -1730,6 +1797,13 @@ run_test test_is_adopted_pending_returns_false
 run_test test_is_adopted_adopted_returns_true
 run_test test_is_adopted_unrecognized_returns_true
 run_test test_is_adopted_missing_returns_true
+run_test test_ensure_auto_embeds_hostname_in_cn
+run_test test_ensure_auto_bare_cn_without_hostname
+run_test test_ensure_auto_cn_round_trips
+run_test test_cn_hostname_empty_for_bare_cn
+run_test test_cn_hostname_empty_for_custom_cn
+run_test test_select_active_threads_hostname_to_auto
+run_test test_select_active_custom_cn_untouched_with_hostname
 
 echo
 echo "Passed: $PASSES, Failed: $FAILS"
