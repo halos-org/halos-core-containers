@@ -25,8 +25,10 @@ journalctl -u halos-manage-certs.service -f           # follow logs
 sudo systemctl start halos-manage-certs.service       # force a refresh
 ```
 
-Auxiliary failures (public-CA publish, Cockpit override install) log
-`WARNING` and do not block the unit. A broken operator-supplied custom CA
+Auxiliary failures do not block the unit: a Cockpit override install failure
+logs `WARNING`, and a public-CA publish failure logs `ERROR` (it is the only
+signal that the served cert is missing or stale, since the `ca-download`
+healthcheck is liveness-only — see below). A broken operator-supplied custom CA
 in `/etc/halos/ca/` aborts the unit and therefore blocks
 `halos-core-containers.service` start.
 
@@ -137,6 +139,75 @@ read-only permissions. The marginal exposure (cockpit-ws group read on the
 second copy) is acceptable: the group exists specifically so cockpit-tls can
 read its private key.
 
+## Device-identifying CA name and the adoption freeze
+
+Each device's auto-CA carries a subject CN that names the device:
+
+    HaLOS Device CA (<hostname>)
+
+so several HaLOS devices' CAs are distinguishable in OS trust stores (Keychain
+Access, the iOS Profiles list, the Windows store) and in a Downloads folder —
+the pain is worst when an operator tries to delete a stale device's CA and sees
+several identical `HaLOS Device CA` rows. (Operator-supplied **custom** CAs keep
+whatever CN the operator set; only the auto-CA gets a device name.)
+
+### Why the name can go stale, and the adoption model
+
+The auto-CA is long-lived (20 y) and is deliberately **not** regenerated on a
+hostname change, because regenerating would orphan every trust anchor an
+operator already installed. But regenerating is *free of orphan risk until the
+CA has been downloaded at least once* — before first download nothing is
+installed anywhere to orphan. So the CN is kept fresh by regenerating while the
+CA is **unadopted**, and frozen permanently at **first download**.
+
+Adoption is one bit of state in a single file:
+
+    /var/lib/container-apps/halos-core-containers/certs/ca/adoption   # "pending" | "adopted"
+
+- **`pending`** — never downloaded. On each `halos-manage-certs` run, if the
+  resolved hostname differs from the CA's embedded name, the auto-CA is
+  regenerated with the current hostname (and the leaf re-signed). No installed
+  anchor exists yet, so this is safe.
+- **`adopted`** — the cert/profile was downloaded at least once (the
+  `ca-download` sidecar records it when it serves the file). The CN is now
+  **frozen**: a later hostname change leaves the name cosmetically stale, but
+  the installed anchor keeps working (TLS validates via the leaf's SANs, not the
+  CA's CN). This staleness is the accepted trade for never orphaning a trust
+  anchor.
+
+**Pre-feature CAs stay frozen with the generic name.** A CA created before this
+feature has the bare CN `HaLOS Device CA` and no sentinel. The first run that
+sees it stamps it `adopted` (frozen) — it *might* already be installed somewhere,
+so it is never regenerated. Such a device keeps the generic name; the page and
+trust-store search wording stay correct because they key on the stable
+`HaLOS Device CA` prefix.
+
+### Separation from the expiry / clock-skew self-heal
+
+The adoption gate governs **only** the hostname-CN refresh. The unrelated
+expiry / clock-skew self-heal regeneration (which rescues a CA generated with a
+bad first-boot clock on an RTC-less Pi) is **not** gated by
+adoption — it still fires for an adopted CA when the CA is expired or
+implausibly aged, and it picks up the current hostname in the new CN. An adopted
+CA is frozen against *rename-driven* refresh, not against self-heal.
+
+### Forcing a CN refresh after adoption (escape hatch)
+
+To make an adopted device pick up its current hostname in the CN — accepting
+that **every client that installed the old CA must reinstall and re-trust the
+new one** — reset the sentinel to `pending` and re-run cert management:
+
+```
+echo -n pending | sudo tee \
+  /var/lib/container-apps/halos-core-containers/certs/ca/adoption
+sudo systemctl start halos-manage-certs.service
+```
+
+The next run regenerates the auto-CA with the current hostname (a bare-CN legacy
+CA upgrades to a device-identifying name this way too), re-signs the leaf, and
+re-publishes. This is a one-file content edit — there is no need to delete
+`ca.crt`/`ca.key`.
+
 ## CA download endpoint
 
 The active CA is published at:
@@ -153,11 +224,21 @@ sidecar that serves the file returns it with:
 | Header                | Value                                       |
 |-----------------------|---------------------------------------------|
 | `Content-Type`        | `application/x-x509-ca-cert`                |
-| `Content-Disposition` | `attachment; filename="halos-ca.crt"`       |
+| `Content-Disposition` | `attachment; filename="halos-ca-<host>.crt"`|
 
 `attachment` is the load-bearing piece: it causes browsers to open the
 OS-level certificate install dialog instead of rendering the PEM as plain
-text.
+text. The saved filename is made device-specific (`halos-ca-<hostname>.crt`)
+client-side from `window.location.hostname`, so several devices' certs are
+distinguishable in a Downloads folder; the URL path itself never changes.
+
+**The sidecar is `busybox httpd` + small CGI scripts** (not nginx): serving the
+`.crt` or `.mobileconfig` records first download by flipping the adoption
+sentinel `pending → adopted` (the freeze described above), a per-request side
+effect stock nginx cannot express. The healthcheck is liveness-only — it never
+touches the cert path, so it cannot trip adoption, and a missing published cert
+is surfaced by `halos-manage-certs` at `ERROR` in the journal rather than by the
+container's health.
 
 ### Trust-install landing page
 
