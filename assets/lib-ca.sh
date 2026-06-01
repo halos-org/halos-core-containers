@@ -798,6 +798,26 @@ halos_ca_cn_hostname() {
     fi
 }
 
+# halos_ca_download_filename <crt_path>
+# Print the device-specific download filename for <crt_path>, derived from its
+# subject CN so the saved file is named after the cert's identity (the name the
+# trust store shows), not how the page was reached: "halos-ca-<hostname>.crt"
+# for a device-identifying CN, or the generic "halos-ca.crt" for a bare/legacy
+# or operator-custom CA (no embedded hostname). The hostname is sanitized to a
+# safe, length-capped filename component. The cert-manager writes this for the
+# ca-download sidecar, whose busybox image has no openssl to read the CN itself.
+halos_ca_download_filename() {
+    local crt="$1" host safe
+    host="$(halos_ca_cn_hostname "$crt")"
+    safe="$(printf '%s' "$host" | tr -d '\r\n' | sed 's/[^A-Za-z0-9._-]/-/g')"
+    safe="$(printf '%.64s' "$safe" | sed -e 's/^[._-]*//' -e 's/[._-]*$//')"
+    if [ -n "$safe" ]; then
+        printf 'halos-ca-%s.crt' "$safe"
+    else
+        printf 'halos-ca.crt'
+    fi
+}
+
 # halos_ca_adoption_init <adoption_file> <auto_ca_crt> <auto_created>
 # Ensure the adoption sentinel exists with a correct initial value, so the
 # ca-download sidecar's bind mount of this single file always finds a regular

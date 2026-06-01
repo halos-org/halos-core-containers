@@ -30,13 +30,17 @@ sends a `Content-Disposition` filename.
 
 # Fix
 
-Set the device-specific filename **server-side**, in the cert CGI, from the
-request `Host` header (port stripped — bracket-aware for IPv6 — sanitized to
-`[A-Za-z0-9._-]`, length-capped, separators trimmed; the sanitization doubles as
-a header-injection guard). That is authoritative for browsers and `curl -OJ`
-alike. The page's JS keeps only display concerns: it fills the *instruction text*
-with the same computed name (mirroring the CGI's sanitization) so the steps name
-the file the user actually saved.
+Set the device-specific filename **server-side**, from the cert's **subject CN**
+— its actual identity (the name the trust store shows), not how the page was
+reached (a first cut used the request `Host` header, but that names the file
+after the access path, not the cert: a bare-CN or renamed-then-adopted cert
+would get a wrong/ambiguous name). Because the busybox sidecar has no `openssl`,
+the cert-manager computes the name and writes it to a file in the published dir;
+the CGI reads it for `Content-Disposition` (validating it to a safe shape). The
+landing page's JS keeps only display concerns and learns the name
+**authoritatively** via a `HEAD` of the cert endpoint — so the instruction text
+always shows the exact file the user saves, with no client-side re-derivation to
+drift out of sync.
 
 # How it slipped through — the verification lesson
 
