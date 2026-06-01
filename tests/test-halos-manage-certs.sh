@@ -817,6 +817,138 @@ EOF
     assert_file "$(_cert_file "$d")" "leaf must still be produced after publish failure" || return 1
 }
 
+# --- Device-identifying CN + unadopted-refresh -----------------------------
+
+_inode() { stat -c '%i' "$1" 2>/dev/null || stat -f '%i' "$1"; }
+_ca_cn() { openssl x509 -in "$1" -noout -subject -nameopt RFC2253 | sed -n 's/.*CN=\([^,]*\).*/\1/p'; }
+# Content-based regeneration check. The CN-refresh gate deletes ca.crt before
+# regenerating, and Linux ext4/overlay reuses the just-freed inode number — so
+# an inode comparison gives a false negative for "the CA was regenerated".
+# Fingerprint is filesystem-agnostic.
+_ca_fp() { openssl x509 -in "$1" -noout -fingerprint -sha256; }
+
+test_first_boot_auto_ca_cn_names_device() {
+    local d; d=$(new_scratch cn_first_boot)
+    run_script "$d" >/dev/null
+    assert_eq "$(_ca_cn "$(_auto_ca_crt "$d")")" "HaLOS Device CA (fixture.test)" "first-boot auto CA CN must name the device" || return 1
+}
+
+test_pending_rename_refreshes_cn() {
+    # An unadopted device renamed before any download: the next run regenerates
+    # the CA with the new CN (distinct from a plain hostname change, which
+    # rotates only the leaf) and re-signs the leaf; the sentinel stays pending.
+    local d; d=$(new_scratch cn_rename)
+    run_script "$d" >/dev/null
+    local ca_before leaf_before
+    ca_before=$(_ca_fp "$(_auto_ca_crt "$d")")
+    leaf_before=$(_inode "$(_cert_file "$d")")
+    printf '%s\n' "renamed.test" > "$d/hostnames.conf"
+    sleep 1
+    run_script "$d" >/dev/null
+    [ "$(_ca_fp "$(_auto_ca_crt "$d")")" != "$ca_before" ] || { echo "auto CA must regenerate on unadopted rename"; return 1; }
+    [ "$(_inode "$(_cert_file "$d")")" != "$leaf_before" ] || { echo "leaf must re-sign after CA refresh"; return 1; }
+    assert_eq "$(_ca_cn "$(_auto_ca_crt "$d")")" "HaLOS Device CA (renamed.test)" "refreshed CN must name the new hostname" || return 1
+    assert_eq "$(cat "$(_adoption_file "$d")")" "pending" "sentinel stays pending after refresh" || return 1
+}
+
+test_pending_rename_end_of_run_consistency() {
+    # After an unadopted-rename run every artifact must reflect the SAME
+    # (regenerated) CA: a client installing the published or profile CA gets a
+    # leaf that chains to it.
+    local d; d=$(new_scratch cn_consistency)
+    run_script "$d" >/dev/null
+    printf '%s\n' "renamed.test" > "$d/hostnames.conf"
+    sleep 1
+    run_script "$d" >/dev/null
+    local auto_fp pub_fp
+    auto_fp=$(openssl x509 -in "$(_auto_ca_crt "$d")" -noout -fingerprint -sha256)
+    pub_fp=$(openssl x509 -in "$(_public_ca "$d")" -noout -fingerprint -sha256)
+    assert_eq "$pub_fp" "$auto_fp" "published CA must match the regenerated auto CA" || return 1
+    if ! openssl verify -CAfile "$(_public_ca "$d")" "$(_cert_file "$d")" >/dev/null 2>&1; then
+        echo "leaf must verify against the published (refreshed) CA"; return 1
+    fi
+    grep -q 'HaLOS Device CA (renamed.test)' "$(_public_mobileconfig "$d")" \
+        || { echo ".mobileconfig must reflect the refreshed device name"; return 1; }
+}
+
+test_pending_no_rename_no_regen() {
+    # No churn: a pending CA whose hostname is unchanged must not regenerate.
+    local d; d=$(new_scratch cn_no_rename)
+    run_script "$d" >/dev/null
+    local ca_before; ca_before=$(_ca_fp "$(_auto_ca_crt "$d")")
+    sleep 1
+    run_script "$d" >/dev/null
+    assert_eq "$(_ca_fp "$(_auto_ca_crt "$d")")" "$ca_before" "no CN refresh when hostname unchanged" || return 1
+}
+
+test_adopted_rename_freezes_cn() {
+    # Once adopted, a rename must NOT regenerate the CA — the installed anchor
+    # stays valid; the stale CN is the accepted cosmetic residual.
+    local d; d=$(new_scratch cn_adopted)
+    run_script "$d" >/dev/null
+    printf 'adopted' > "$(_adoption_file "$d")"
+    local ca_before; ca_before=$(_ca_fp "$(_auto_ca_crt "$d")")
+    printf '%s\n' "renamed.test" > "$d/hostnames.conf"
+    sleep 1
+    run_script "$d" >/dev/null
+    assert_eq "$(_ca_fp "$(_auto_ca_crt "$d")")" "$ca_before" "adopted CA must not regenerate on rename" || return 1
+    assert_eq "$(_ca_cn "$(_auto_ca_crt "$d")")" "HaLOS Device CA (fixture.test)" "frozen CN keeps the original hostname" || return 1
+}
+
+test_legacy_bare_cn_frozen_on_rename() {
+    # A pre-feature bare-CN CA is stamped adopted and must stay frozen with its
+    # bare CN even across a rename (migration safety).
+    local d; d=$(new_scratch cn_legacy_frozen)
+    _seed_auto_ca_with_cn "$d" "HaLOS Device CA" || { echo "seed failed"; return 1; }
+    run_script "$d" >/dev/null
+    assert_eq "$(cat "$(_adoption_file "$d")")" "adopted" "precondition: legacy stamped adopted" || return 1
+    local ca_before; ca_before=$(_ca_fp "$(_auto_ca_crt "$d")")
+    printf '%s\n' "renamed.test" > "$d/hostnames.conf"
+    sleep 1
+    run_script "$d" >/dev/null
+    assert_eq "$(_ca_fp "$(_auto_ca_crt "$d")")" "$ca_before" "legacy bare-CN CA must stay frozen on rename" || return 1
+    assert_eq "$(_ca_cn "$(_auto_ca_crt "$d")")" "HaLOS Device CA" "legacy CN stays bare" || return 1
+}
+
+test_expiry_regen_uses_current_hostname_when_adopted() {
+    # R6: the expiry/clock-skew self-heal regen is NOT gated by adoption and
+    # picks up the current hostname in the new CN.
+    local d; d=$(new_scratch cn_expiry_adopted)
+    run_script "$d" >/dev/null
+    printf 'adopted' > "$(_adoption_file "$d")"
+    local nb na
+    nb=$(date -u -d "@$(( $(date -u +%s) - 30 * 86400 ))" +%Y%m%d%H%M%SZ 2>/dev/null \
+        || date -u -r "$(( $(date -u +%s) - 30 * 86400 ))" +%Y%m%d%H%M%SZ)
+    na=$(date -u -d "@$(( $(date -u +%s) - 86400 ))" +%Y%m%d%H%M%SZ 2>/dev/null \
+        || date -u -r "$(( $(date -u +%s) - 86400 ))" +%Y%m%d%H%M%SZ)
+    openssl req -x509 -nodes -key "$(_auto_ca_key "$d")" -out "$(_auto_ca_crt "$d")" \
+        -not_before "$nb" -not_after "$na" -subj "/CN=HaLOS Device CA" \
+        -addext "basicConstraints=critical,CA:TRUE,pathlen:0" \
+        -addext "keyUsage=critical,keyCertSign,cRLSign" >/dev/null 2>&1 \
+        || { echo "expired-CA fixture failed"; return 1; }
+    sleep 1
+    run_script "$d" >/dev/null
+    assert_eq "$(_ca_cn "$(_auto_ca_crt "$d")")" "HaLOS Device CA (fixture.test)" "expiry regen must pick up the current hostname even when adopted" || return 1
+    assert_eq "$(cat "$(_adoption_file "$d")")" "adopted" "sentinel stays adopted through self-heal" || return 1
+}
+
+test_custom_ca_cn_untouched() {
+    # R7: with a valid custom CA active, no CN-refresh logic runs and the
+    # operator's CN is left as-is.
+    local d; d=$(new_scratch cn_custom)
+    ( umask 077
+      openssl req -x509 -nodes -newkey rsa:2048 -days 365 \
+        -keyout "$d/custom-ca/ca.key" -out "$d/custom-ca/ca.crt" \
+        -subj "/CN=Acme Operator CA" \
+        -addext "basicConstraints=critical,CA:TRUE,pathlen:0" \
+        -addext "keyUsage=critical,keyCertSign,cRLSign" >/dev/null 2>&1 ) \
+        || { echo "custom CA fixture failed"; return 1; }
+    chmod 0700 "$d/custom-ca"
+    run_script "$d" >/dev/null
+    assert_eq "$(_ca_cn "$d/custom-ca/ca.crt")" "Acme Operator CA" "custom CA CN must be untouched" || return 1
+    assert_no_file "$(_auto_ca_crt "$d")" "auto CA must not be generated in custom mode" || return 1
+}
+
 # ---------------------------------------------------------------------------
 
 run_test test_first_boot_bootstrap_creates_all_artifacts
@@ -844,6 +976,14 @@ run_test test_first_boot_initializes_adoption_pending
 run_test test_legacy_bare_cn_ca_stamped_adopted
 run_test test_adoption_sentinel_preserved_on_rerun
 run_test test_publish_public_failure_logs_error
+run_test test_first_boot_auto_ca_cn_names_device
+run_test test_pending_rename_refreshes_cn
+run_test test_pending_rename_end_of_run_consistency
+run_test test_pending_no_rename_no_regen
+run_test test_adopted_rename_freezes_cn
+run_test test_legacy_bare_cn_frozen_on_rename
+run_test test_expiry_regen_uses_current_hostname_when_adopted
+run_test test_custom_ca_cn_untouched
 
 echo
 echo "Passed: $PASSES, Failed: $FAILS"

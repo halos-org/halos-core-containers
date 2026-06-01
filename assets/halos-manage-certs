@@ -98,7 +98,7 @@ mkdir -p "${CERTS_DIR}"
 # silently falling back — operators who installed a custom CA can SSH to
 # diagnose, and silent fallback would orphan the trust anchor they
 # distributed.
-halos_ca_select_active "${CUSTOM_CA_DIR}" "${AUTO_CA_DIR}" "${SERVING_CA}"
+halos_ca_select_active "${CUSTOM_CA_DIR}" "${AUTO_CA_DIR}" "${SERVING_CA}" "${HALOS_DOMAIN}"
 CA_CRT="${HALOS_CA_ACTIVE_CRT}"
 CA_KEY="${HALOS_CA_ACTIVE_KEY}"
 echo "Active CA: ${CA_CRT} (mode=${HALOS_CA_ACTIVE_MODE})"
@@ -112,6 +112,36 @@ echo "Active CA: ${CA_CRT} (mode=${HALOS_CA_ACTIVE_MODE})"
 # tests run unprivileged.
 halos_ca_adoption_init "${ADOPTION_FILE}" "${AUTO_CA_DIR}/ca.crt" "${HALOS_CA_AUTO_CREATED:-0}"
 chown "${HALOS_CA_DOWNLOAD_UID}:${HALOS_CA_DOWNLOAD_UID}" "${ADOPTION_FILE}" 2>/dev/null || true
+
+# CN-refresh gate: keep the auto-CA's subject CN tracking the current hostname
+# while it is still unadopted (never downloaded), then freeze it. This is a
+# distinct trigger from the expiry/clock-skew self-heal regen inside
+# halos_ca_ensure_auto, which still fires regardless of adoption. Auto mode
+# only — operators own custom-CA CNs. The regen runs here, before any consumer
+# of the active CA (public publish, .mobileconfig, leaf re-sign), so every
+# run-end artifact reflects the one regenerated CA; a CA whose fingerprint
+# changes re-signs the leaf via the existing sentinel mismatch.
+# Skip when the hostname is unresolved: an empty domain cannot produce a stable
+# CN, and refreshing toward it would churn a new CA on every flap.
+if [ "${HALOS_CA_ACTIVE_MODE}" = "auto" ] && [ -n "${HALOS_DOMAIN}" ] \
+   && ! halos_ca_is_adopted "${ADOPTION_FILE}"; then
+    CURRENT_CN_HOST="$(halos_ca_cn_hostname "${CA_CRT}")"
+    if [ "${CURRENT_CN_HOST}" != "${HALOS_DOMAIN}" ]; then
+        # Re-check adoption immediately before the destructive regen: a download
+        # can flip the sentinel between the gate's first check and here, and
+        # regenerating an adopted CA would orphan the just-installed anchor.
+        if halos_ca_is_adopted "${ADOPTION_FILE}"; then
+            echo "Adoption raced ahead of the CN refresh; leaving the CA frozen."
+        else
+            echo "Auto-CA unadopted and its CN host (${CURRENT_CN_HOST:-none}) differs from ${HALOS_DOMAIN}; refreshing CA CN..."
+            rm -f "${AUTO_CA_DIR}/ca.crt" "${AUTO_CA_DIR}/ca.key"
+            if ! halos_ca_ensure_auto "${AUTO_CA_DIR}" "${HALOS_DOMAIN}"; then
+                echo "halos-manage-certs: CN-refresh regeneration failed; cert generation cannot continue" >&2
+                exit 1
+            fi
+        fi
+    fi
+fi
 
 # Publish the active CA's PEM bytes into the public dir the ca-download
 # sidecar bind-mounts. Refreshed unconditionally so the published bytes
