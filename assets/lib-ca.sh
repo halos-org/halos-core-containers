@@ -790,8 +790,20 @@ halos_ca_adoption_init() {
         echo "halos_ca_adoption_init: <adoption_file> required" >&2
         return 2
     fi
-    # Preserve an existing sentinel verbatim (only a download may change it).
-    [ -f "$adoption_file" ] && return 0
+    # Preserve an existing regular-file sentinel verbatim (only a download may
+    # change it). A non-regular file at the path — e.g. a directory Docker
+    # created when a `compose up` beat the cert-manager — is removed and
+    # recreated, since the whole purpose here is to guarantee a regular file
+    # exists before the sidecar binds it (otherwise the bind fails and the
+    # cert-manager would abort on the write below, never recovering).
+    if [ -f "$adoption_file" ]; then
+        return 0
+    elif [ -e "$adoption_file" ]; then
+        if ! rm -rf "$adoption_file"; then
+            echo "halos_ca_adoption_init: $adoption_file exists and is not a regular file, and could not be removed" >&2
+            return 1
+        fi
+    fi
 
     local value="adopted"
     if [ "$auto_created" = "1" ]; then
@@ -801,7 +813,9 @@ halos_ca_adoption_init() {
         cn="$(_halos_ca_subject_cn "$auto_ca_crt")"
         if [ "$cn" = "$HALOS_CA_SUBJECT_CN_PREFIX" ]; then
             value="adopted"
-        elif [[ "$cn" == "$HALOS_CA_SUBJECT_CN_PREFIX ("*")" ]]; then
+        elif [[ "$cn" == "$HALOS_CA_SUBJECT_CN_PREFIX ("?*")" ]]; then
+            # ?* requires at least one char between the parens, so a malformed
+            # empty-hostname CN "HaLOS Device CA ()" falls through to adopted.
             value="pending"
         fi
     fi

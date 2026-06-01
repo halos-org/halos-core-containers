@@ -1544,6 +1544,27 @@ test_adoption_init_pending_for_device_cn() {
     assert_eq "$(cat "$d/adoption")" "pending" "pre-existing device-CN CA must init pending" || return 1
 }
 
+test_adoption_init_adopted_for_empty_hostname_cn() {
+    # A malformed device CN with an empty hostname must fall through to adopted
+    # (fail-safe), not be treated as a refresh-eligible device CN.
+    local d="$TMPDIR_ROOT/case_adopt_empty_cn"
+    mkdir -p "$d"
+    _mk_ca_with_cn "$d/ca.crt" "HaLOS Device CA ()" || { echo "fixture failed"; return 1; }
+    halos_ca_adoption_init "$d/adoption" "$d/ca.crt" "0" || return 1
+    assert_eq "$(cat "$d/adoption")" "adopted" "empty-hostname CN must init adopted" || return 1
+}
+
+test_adoption_init_replaces_directory_at_path() {
+    # Self-heal: if Docker created a directory at the sentinel path (a
+    # `compose up` that beat the cert-manager), init must replace it with a
+    # regular file rather than abort on the write.
+    local d="$TMPDIR_ROOT/case_adopt_dir_at_path"
+    mkdir -p "$d/adoption"
+    halos_ca_adoption_init "$d/adoption" "$d/ca.crt" "1" || return 1
+    [ -f "$d/adoption" ] || { echo "directory was not replaced with a regular file"; return 1; }
+    assert_eq "$(cat "$d/adoption")" "pending" "replaced sentinel must hold the computed value" || return 1
+}
+
 test_adoption_init_adopted_when_no_auto_ca() {
     # Custom-CA mode: there is no auto-CA to classify, but the sentinel must
     # still exist (the sidecar bind-mounts it). Fail-safe to adopted.
@@ -1699,6 +1720,8 @@ run_test test_ensure_auto_clears_created_flag_on_reuse
 run_test test_adoption_init_pending_for_new_ca
 run_test test_adoption_init_adopted_for_legacy_bare_cn
 run_test test_adoption_init_pending_for_device_cn
+run_test test_adoption_init_adopted_for_empty_hostname_cn
+run_test test_adoption_init_replaces_directory_at_path
 run_test test_adoption_init_adopted_when_no_auto_ca
 run_test test_adoption_init_preserves_existing
 run_test test_adoption_init_creates_mode_0644

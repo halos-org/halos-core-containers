@@ -162,7 +162,7 @@ text.
 ### Trust-install landing page
 
 `https://<host>/ca/` serves a self-contained walkthrough
-(`assets/ca-download/landing/index.html`) that guides the operator through
+(`assets/ca-download/www/ca/index.html`) that guides the operator through
 installing the `.crt` per platform: macOS, iOS/iPadOS, Android, Linux, and
 Windows. Client-side User-Agent detection auto-expands the section matching
 the visitor's OS; with JavaScript off, the sections stay collapsed but remain

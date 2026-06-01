@@ -115,9 +115,12 @@ test_cert_post_rejected_without_adopting() {
 }
 
 test_cert_torn_download_does_not_adopt() {
-    # A client disconnect mid-body breaks the stdout pipe; cat dies (SIGPIPE)
-    # before the flip. Body is sized past the pipe buffer and the reader closes
-    # after a few hundred bytes, so the disconnect lands inside the body stream.
+    # A disconnect mid-body breaks the stdout pipe; cat dies (SIGPIPE) before
+    # the flip. Body is sized past the pipe buffer and the reader closes after a
+    # few hundred bytes, so the disconnect lands inside the body stream. NB this
+    # proves the large-payload path only: under busybox httpd a payload that
+    # fits one socket buffer (every real cert) is flushed before any disconnect
+    # is observable, so it adopts on serve — which is safe (see the CGI header).
     local d; d=$(new_scratch cert_torn 262144)
     invoke "$CERT_CGI" "$d" GET | head -c 256 >/dev/null
     assert_eq "$(cat "$d/adoption")" "pending" "torn download must not adopt" || return 1

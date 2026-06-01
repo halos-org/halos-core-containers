@@ -4,10 +4,14 @@
 # `*.crt:/bin/sh` suffix rule in httpd.conf.
 #
 # Adoption: the device's auto-CA may have its subject CN refreshed on a
-# hostname change, but only until the CA has been downloaded at least once —
-# after that the CN is frozen so an already-installed trust anchor is never
-# orphaned. This script records that first download by flipping the adoption
-# sentinel pending→adopted, as its LAST action, after the body is sent.
+# hostname change, but only until the CA has been served at least once — after
+# that the CN is frozen so an already-installed trust anchor is never orphaned.
+# This script records that by flipping the adoption sentinel pending→adopted as
+# its LAST action, after the body is written. busybox httpd buffers CGI stdout,
+# so for a cert that fits one socket buffer (every real PEM does) the flip
+# effectively happens on serve, not on confirmed receipt — a mid-transfer
+# disconnect only aborts the flip for payloads larger than the buffer. That is
+# safe: premature adoption merely forgoes a future CN refresh, it never orphans.
 #
 # Paths default to the in-container mount points; overridable via env so the
 # script can be exercised directly in tests.
@@ -49,9 +53,8 @@ if [ ! -f "$CA_CRT" ]; then
 fi
 
 emit_headers
-# Stream the cert. If the client disconnects mid-body the write fails (SIGPIPE
-# terminates this script) before the flip below — a torn download does not
-# adopt.
+# Stream the cert. A failed write (broken pipe on a large-payload disconnect)
+# exits before the flip; small certs flush to the buffer and the flip runs.
 cat "$CA_CRT" || exit 0
 
 # Flip the sentinel in place (truncate + rewrite, same inode — the file is a
