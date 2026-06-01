@@ -109,9 +109,17 @@
       </p>
 
       <p>
-        <a class="download" href="/ca/halos-ca.crt" download="halos-ca.crt"
+        <a class="download" href="/ca/halos-ca.crt" download="halos-ca.crt" data-cert-download
           >Download the HaLOS CA certificate</a
         >
+      </p>
+
+      <p class="caveat">
+        In your operating system's trust store this CA appears as
+        <strong>HaLOS Device CA</strong>. Newer devices also show this device's
+        hostname, <code data-device-host>this device</code>, in parentheses —
+        handy when you manage several HaLOS devices and need to tell their
+        certificates apart (or remove a stale one).
       </p>
 
       <div class="note">
@@ -125,9 +133,9 @@
       <details id="macos">
         <summary>macOS</summary>
         <ol>
-          <li>Download <a href="/ca/halos-ca.crt" download="halos-ca.crt"><code>halos-ca.crt</code></a> (the button at the top does the same).</li>
+          <li>Download <a href="/ca/halos-ca.crt" download="halos-ca.crt" data-cert-download><code>halos-ca.crt</code></a> (the button at the top does the same).</li>
           <li>Double-click the downloaded file. Keychain Access opens and adds the certificate to the <strong>System</strong> keychain (choose System if it asks which keychain); enter an admin password if prompted.</li>
-          <li>It's installed but not yet trusted. In Keychain Access, select the <strong>System</strong> keychain, find <em>HaLOS Device CA</em> under <em>Certificates</em>, and double-click it.</li>
+          <li>It's installed but not yet trusted. In Keychain Access, select the <strong>System</strong> keychain, find <em>HaLOS Device CA</em> under <em>Certificates</em> (on newer devices it reads <em>HaLOS Device CA (<span data-device-host>this device</span>)</em>), and double-click it.</li>
           <li>Expand <strong>Trust</strong> and set <em>Secure Sockets Layer (SSL)</em> (or <em>When using this certificate</em>) to <strong>Always Trust</strong>. Close the window and authenticate. <span class="caveat">macOS keeps install and trust separate — without this step the warnings stay.</span></li>
           <li>Quit and reopen your browser.</li>
         </ol>
@@ -143,13 +151,13 @@
         </p>
         <ol>
           <li>Tap <strong>Download the install profile</strong> above in <strong>Safari</strong> and allow it. iOS shows <em>Profile Downloaded</em>. <span class="caveat">Use Safari — other browsers can't hand the profile to iOS.</span></li>
-          <li>Open <strong>Settings → General → VPN &amp; Device Management</strong>, tap the <em>HaLOS Device CA</em> profile, then <strong>Install</strong> (enter your passcode). <span class="caveat">The profile is unsigned, so iOS marks it "Not Verified" — expected for your own device.</span></li>
+          <li>Open <strong>Settings → General → VPN &amp; Device Management</strong>, tap the <em>HaLOS Device CA</em> profile (newer devices name it <em>HaLOS Device CA (<span data-device-host>this device</span>)</em>), then <strong>Install</strong> (enter your passcode). <span class="caveat">The profile is unsigned, so iOS marks it "Not Verified" — expected for your own device.</span></li>
           <li><strong>Then</strong> open <strong>Settings → General → About → Certificate Trust Settings</strong> and turn on the toggle for the HaLOS CA. <span class="caveat">iOS 17/18 require this separate toggle — installing the profile alone does not trust it for websites.</span></li>
         </ol>
         <details>
           <summary>Advanced: install the raw certificate instead</summary>
           <ol>
-            <li>Download <a href="/ca/halos-ca.crt" download="halos-ca.crt"><code>halos-ca.crt</code></a> in Safari. iOS usually saves it to the <strong>Files</strong> app instead of prompting.</li>
+            <li>Download <a href="/ca/halos-ca.crt" download="halos-ca.crt" data-cert-download><code>halos-ca.crt</code></a> in Safari. iOS usually saves it to the <strong>Files</strong> app instead of prompting.</li>
             <li>Open the <strong>Files</strong> app and tap the downloaded <code>halos-ca.crt</code>. iOS asks whether to allow the certificate — allow it, then it appears under <strong>Settings → General → VPN &amp; Device Management</strong>.</li>
             <li>Install it from there, then enable it under <strong>Settings → General → About → Certificate Trust Settings</strong>. <span class="caveat">The install profile above avoids this Files-app detour — prefer it.</span></li>
           </ol>
@@ -217,6 +225,34 @@ sudo update-ca-certificates</pre>
         if (id) {
           var match = document.getElementById(id);
           if (match) match.open = true;
+        }
+
+        // The page is served from the device being accessed, so its hostname
+        // is window.location.hostname — no server-side injection needed.
+        var host = window.location.hostname || "";
+
+        // Device-specific saved filename so several devices' certs are
+        // distinguishable in a Downloads folder. The URL path stays
+        // /ca/halos-ca.crt; only the Content-Disposition-equivalent (the
+        // download attribute) changes. Sanitize to a filesystem-safe name —
+        // dots and hyphens pass (DNS names, IPv4 literals); an IPv6 literal's
+        // colons collapse to "-". Empty host falls back to the bare name.
+        var safe = host.replace(/[^A-Za-z0-9._-]/g, "-");
+        var filename = safe ? "halos-ca-" + safe + ".crt" : "halos-ca.crt";
+        var anchors = document.querySelectorAll("a[data-cert-download]");
+        for (var i = 0; i < anchors.length; i++) {
+          anchors[i].setAttribute("download", filename);
+        }
+
+        // Name the device wherever the steps reference it as context for the
+        // trust-store entry. The CA's CN embeds the device's DNS hostname, never
+        // an IP literal, so fall back to "this device" when accessed by raw IP
+        // (or with no hostname) rather than showing a misleading address.
+        var isIp = /^\d{1,3}(\.\d{1,3}){3}$/.test(host) || host.indexOf(":") !== -1;
+        var label = host && !isIp ? host : "this device";
+        var hosts = document.querySelectorAll("[data-device-host]");
+        for (var j = 0; j < hosts.length; j++) {
+          hosts[j].textContent = label;
         }
       })();
     </script>

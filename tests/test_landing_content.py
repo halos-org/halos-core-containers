@@ -76,3 +76,52 @@ def test_ios_advanced_names_files_app_fallback():
 )
 def test_platform_trust_marker_present(marker):
     assert marker in HTML
+
+
+# --- Device-specific download filename + on-page device name ---------------
+# These guard the structural invariants; the actual hostname value is filled at
+# runtime from window.location.hostname, so it can't be asserted statically.
+
+def test_cert_url_path_unchanged():
+    # Only the saved filename becomes device-specific; the URL path the tile,
+    # docs, and Traefik routing depend on must not move.
+    assert 'href="/ca/halos-ca.crt"' in HTML
+
+
+def test_cert_download_anchors_are_marked_and_have_download_attr():
+    # Every cert-download anchor carries the data-cert-download hook (so the JS
+    # can set a per-device filename) and a static download fallback (so the
+    # save name is sane with JS off). Count parity catches a new cert anchor
+    # added without the hook.
+    import re
+
+    cert_anchors = re.findall(r"<a\b[^>]*>", HTML)
+    cert_anchors = [a for a in cert_anchors if 'href="/ca/halos-ca.crt"' in a]
+    assert cert_anchors, "expected at least one cert-download anchor"
+    for a in cert_anchors:
+        assert "data-cert-download" in a
+        assert "download=" in a
+
+
+def test_device_host_placeholder_present():
+    # At least one runtime-filled device-name slot exists.
+    assert "data-device-host" in HTML
+
+
+def test_device_filename_js_builds_per_device_name():
+    # The JS derives a sanitized halos-ca-<host>.crt filename from the hostname.
+    assert 'halos-ca-" + safe + ".crt' in HTML
+    assert "window.location.hostname" in HTML
+
+
+def test_device_name_falls_back_for_ip_access():
+    # The CA's CN embeds a DNS hostname, never an IP, so the on-page device
+    # name must fall back to "this device" when accessed by a raw IP.
+    assert '"this device"' in HTML
+    assert "isIp" in HTML
+
+
+def test_trust_store_search_term_stable_for_old_certs():
+    # Instructions anchor on the stable "HaLOS Device CA" prefix so a generic
+    # (pre-feature, bare-CN) certificate is still findable in the trust store.
+    assert "HaLOS Device CA" in HTML
