@@ -1,0 +1,46 @@
+#!/bin/sh
+# CGI for /ca/halos-ca.mobileconfig — serve the Apple Configuration Profile
+# carrying the active CA, then record first external adoption. Run by busybox
+# httpd via the `*.mobileconfig:/bin/sh` suffix rule in httpd.conf.
+#
+# No Content-Disposition: attachment here (unlike the .crt). On iOS Safari an
+# attachment routes the file to the Files app and the profile installer never
+# fires — the failure tracked in #169. Served inline with the aspen MIME so
+# Safari shows the "Profile Downloaded" install prompt instead.
+#
+# Adoption flip is identical to the cert CGI: see halos-ca.crt for rationale.
+set -u
+PROFILE="${HALOS_CA_PUBLIC_PROFILE:-/srv/halos-ca.mobileconfig}"
+ADOPTION="${HALOS_ADOPTION_FILE:-/adoption}"
+
+emit_headers() {
+    printf 'Status: 200 OK\n'
+    printf 'Content-Type: application/x-apple-aspen-config\n'
+    printf '\n'
+}
+
+case "${REQUEST_METHOD:-GET}" in
+    GET) ;;
+    HEAD) emit_headers; exit 0 ;;
+    *)  printf 'Status: 405 Method Not Allowed\n'
+        printf 'Allow: GET, HEAD\n'
+        printf 'Content-Type: text/plain\n'
+        printf '\n'
+        printf 'Method not allowed\n'
+        exit 0 ;;
+esac
+
+if [ ! -f "$PROFILE" ]; then
+    printf 'Status: 503 Service Unavailable\n'
+    printf 'Content-Type: text/plain\n'
+    printf '\n'
+    printf 'Profile temporarily unavailable\n'
+    exit 0
+fi
+
+emit_headers
+cat "$PROFILE" || exit 0
+
+cur=$(cat "$ADOPTION" 2>/dev/null) || exit 0
+[ "$cur" = "pending" ] && printf 'adopted' > "$ADOPTION"
+exit 0

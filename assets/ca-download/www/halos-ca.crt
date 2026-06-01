@@ -1,0 +1,11 @@
+#!/bin/sh
+# CGI for the legacy /halos-ca.crt path. The cert moved under /ca/ on
+# 2026-05-28; answer 410 Gone (not 404) plus a canonical hint so clients
+# holding the old URL discover the new path. Run by busybox httpd via the
+# `*.crt:/bin/sh` suffix rule. No adoption side effect — this path serves no
+# cert bytes.
+printf 'Status: 410 Gone\n'
+printf 'Link: </ca/halos-ca.crt>; rel="canonical"\n'
+printf 'Content-Type: text/plain\n'
+printf '\n'
+printf 'Gone. The device CA now lives at /ca/halos-ca.crt\n'
