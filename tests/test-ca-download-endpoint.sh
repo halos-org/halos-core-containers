@@ -108,7 +108,10 @@ check "GET /healthz leaves sentinel"       "pending" "$(cat "$SENTINEL")"
 reset_sentinel
 check "GET /ca/halos-ca.crt status"        "200" "$(code "$BASE/ca/halos-ca.crt")"
 check "GET /ca/halos-ca.crt content-type"  "application/x-x509-ca-cert" "$(hdr Content-Type "$BASE/ca/halos-ca.crt")"
-check "GET /ca/halos-ca.crt disposition"   'attachment; filename="halos-ca.crt"' "$(hdr Content-Disposition "$BASE/ca/halos-ca.crt")"
+# Device-specific filename derived server-side from the Host header (curl sends
+# Host: 127.0.0.1:<port>; the CGI strips the port). A server filename overrides
+# the page's download attribute, which is why this must come from the server.
+check "GET /ca/halos-ca.crt disposition"   'attachment; filename="halos-ca-127.0.0.1.crt"' "$(hdr Content-Disposition "$BASE/ca/halos-ca.crt")"
 # Cross-boundary: the in-container CGI flipped the host-visible sentinel.
 check "completed cert GET adopts"          "adopted" "$(cat "$SENTINEL")"
 # Idempotent: a second download with the sentinel already adopted is a no-op.

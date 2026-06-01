@@ -63,12 +63,13 @@ new_scratch() {
 }
 
 # Invoke a CGI with the scratch paths wired in. Usage:
-#   invoke <cgi> <scratch> <method>
+#   invoke <cgi> <scratch> <method> [http_host]
 invoke() {
     HALOS_CA_PUBLIC_CRT="$2/halos-ca.crt" \
     HALOS_CA_PUBLIC_PROFILE="$2/halos-ca.mobileconfig" \
     HALOS_ADOPTION_FILE="$2/adoption" \
     REQUEST_METHOD="$3" \
+    HTTP_HOST="${4:-}" \
     sh "$1"
 }
 
@@ -86,6 +87,73 @@ test_cert_get_serves_and_adopts() {
     assert_eq "$(cgi_hdr "$out" Content-Disposition)" 'attachment; filename="halos-ca.crt"' "disposition" || return 1
     case "$out" in *"BEGIN CERTIFICATE"*) ;; *) echo "body missing cert"; return 1 ;; esac
     assert_eq "$(cat "$d/adoption")" "adopted" "completed GET must adopt" || return 1
+}
+
+test_cert_filename_from_host_is_device_specific() {
+    # The saved filename must be device-specific and come from the Host header
+    # (a server Content-Disposition filename overrides the page download attr).
+    local d; d=$(new_scratch cert_host)
+    local out; out=$(invoke "$CERT_CGI" "$d" GET halosdev.local)
+    assert_eq "$(cgi_hdr "$out" Content-Disposition)" 'attachment; filename="halos-ca-halosdev.local.crt"' "device-specific filename from Host" || return 1
+}
+
+test_cert_filename_strips_host_port() {
+    local d; d=$(new_scratch cert_host_port)
+    local out; out=$(invoke "$CERT_CGI" "$d" GET "halosdev.local:8443")
+    assert_eq "$(cgi_hdr "$out" Content-Disposition)" 'attachment; filename="halos-ca-halosdev.local.crt"' "port stripped from filename" || return 1
+}
+
+test_cert_filename_falls_back_without_host() {
+    local d; d=$(new_scratch cert_no_host)
+    local out; out=$(invoke "$CERT_CGI" "$d" GET "")
+    assert_eq "$(cgi_hdr "$out" Content-Disposition)" 'attachment; filename="halos-ca.crt"' "bare filename when Host absent" || return 1
+}
+
+test_cert_filename_sanitizes_malicious_host() {
+    # A crafted Host with separators/quotes/spaces must collapse to a safe
+    # filename — no header injection, no stray quotes.
+    local d; d=$(new_scratch cert_evil_host)
+    local out; out=$(invoke "$CERT_CGI" "$d" GET 'a/b "c.local')
+    assert_eq "$(cgi_hdr "$out" Content-Disposition)" 'attachment; filename="halos-ca-a-b--c.local.crt"' "host sanitized to safe filename" || return 1
+}
+
+test_cert_filename_no_crlf_header_injection() {
+    # A Host carrying a CRLF + a forged header must not inject one: CR/LF are
+    # stripped before sanitizing, so there is exactly one Content-Disposition
+    # line (with the forged text folded into the filename), and no Set-Cookie.
+    local d; d=$(new_scratch cert_crlf_host)
+    local out; out=$(invoke "$CERT_CGI" "$d" GET "$(printf 'evil\r\nSet-Cookie: pwned')")
+    assert_eq "$(cgi_hdr "$out" Content-Disposition)" 'attachment; filename="halos-ca-evilSet-Cookie.crt"' "CRLF folded into filename, not injected" || return 1
+    local cd_lines; cd_lines=$(printf '%s\n' "$out" | grep -ci '^Content-Disposition:')
+    assert_eq "$cd_lines" "1" "exactly one Content-Disposition line" || return 1
+    if printf '%s\n' "$out" | grep -qi '^Set-Cookie:'; then
+        echo "CRLF in Host injected a header"; return 1
+    fi
+}
+
+test_cert_filename_ipv6_bracketed() {
+    # A bracketed IPv6 Host keeps the address (port stripped); colons collapse
+    # to "-", so two IPv6 devices still get distinguishable filenames.
+    local d; d=$(new_scratch cert_ipv6)
+    local out; out=$(invoke "$CERT_CGI" "$d" GET "[2001:db8::1]:443")
+    assert_eq "$(cgi_hdr "$out" Content-Disposition)" 'attachment; filename="halos-ca-2001-db8--1.crt"' "bracketed IPv6 filename" || return 1
+}
+
+test_cert_filename_length_capped() {
+    # An over-long Host must not produce a filename component over the 255-byte
+    # FS limit (which would truncate and could mask the .crt suffix).
+    local d; d=$(new_scratch cert_long_host)
+    local long; long=$(printf 'a%.0s' {1..300})
+    local out; out=$(invoke "$CERT_CGI" "$d" GET "${long}.local")
+    local expect; expect="attachment; filename=\"halos-ca-$(printf 'a%.0s' {1..64}).crt\""
+    assert_eq "$(cgi_hdr "$out" Content-Disposition)" "$expect" "host length capped at 64" || return 1
+}
+
+test_cert_head_uses_device_filename() {
+    # HEAD shares emit_headers, so it must carry the same device-specific name.
+    local d; d=$(new_scratch cert_head_host)
+    local out; out=$(invoke "$CERT_CGI" "$d" HEAD halosdev.local)
+    assert_eq "$(cgi_hdr "$out" Content-Disposition)" 'attachment; filename="halos-ca-halosdev.local.crt"' "HEAD device filename" || return 1
 }
 
 test_cert_get_adopt_is_in_place() {
@@ -163,6 +231,14 @@ test_gone_returns_410_with_canonical_hint() {
 }
 
 run_test test_cert_get_serves_and_adopts
+run_test test_cert_filename_from_host_is_device_specific
+run_test test_cert_filename_strips_host_port
+run_test test_cert_filename_falls_back_without_host
+run_test test_cert_filename_sanitizes_malicious_host
+run_test test_cert_filename_no_crlf_header_injection
+run_test test_cert_filename_ipv6_bracketed
+run_test test_cert_filename_length_capped
+run_test test_cert_head_uses_device_filename
 run_test test_cert_get_adopt_is_in_place
 run_test test_cert_head_serves_headers_without_adopting
 run_test test_cert_post_rejected_without_adopting

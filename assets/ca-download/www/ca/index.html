@@ -109,8 +109,7 @@
       </p>
 
       <p>
-        <a class="download" href="/ca/halos-ca.crt" download="halos-ca.crt" data-cert-download
-          >Download the HaLOS CA certificate</a
+        <a class="download" href="/ca/halos-ca.crt" download="halos-ca.crt"          >Download the HaLOS CA certificate</a
         >
       </p>
 
@@ -133,7 +132,7 @@
       <details id="macos">
         <summary>macOS</summary>
         <ol>
-          <li>Download <a href="/ca/halos-ca.crt" download="halos-ca.crt" data-cert-download><code>halos-ca.crt</code></a> (the button at the top does the same).</li>
+          <li>Download <a href="/ca/halos-ca.crt" download="halos-ca.crt"><code data-cert-filename>halos-ca.crt</code></a> (the button at the top does the same).</li>
           <li>Double-click the downloaded file. Keychain Access opens and adds the certificate to the <strong>System</strong> keychain (choose System if it asks which keychain); enter an admin password if prompted.</li>
           <li>It's installed but not yet trusted. In Keychain Access, select the <strong>System</strong> keychain, find <em>HaLOS Device CA</em> under <em>Certificates</em> (on newer devices it reads <em>HaLOS Device CA (<span data-device-host>this device</span>)</em>), and double-click it.</li>
           <li>Expand <strong>Trust</strong> and set <em>Secure Sockets Layer (SSL)</em> (or <em>When using this certificate</em>) to <strong>Always Trust</strong>. Close the window and authenticate. <span class="caveat">macOS keeps install and trust separate — without this step the warnings stay.</span></li>
@@ -157,8 +156,8 @@
         <details>
           <summary>Advanced: install the raw certificate instead</summary>
           <ol>
-            <li>Download <a href="/ca/halos-ca.crt" download="halos-ca.crt" data-cert-download><code>halos-ca.crt</code></a> in Safari. iOS usually saves it to the <strong>Files</strong> app instead of prompting.</li>
-            <li>Open the <strong>Files</strong> app and tap the downloaded <code>halos-ca.crt</code>. iOS asks whether to allow the certificate — allow it, then it appears under <strong>Settings → General → VPN &amp; Device Management</strong>.</li>
+            <li>Download <a href="/ca/halos-ca.crt" download="halos-ca.crt"><code data-cert-filename>halos-ca.crt</code></a> in Safari. iOS usually saves it to the <strong>Files</strong> app instead of prompting.</li>
+            <li>Open the <strong>Files</strong> app and tap the downloaded <code data-cert-filename>halos-ca.crt</code>. iOS asks whether to allow the certificate — allow it, then it appears under <strong>Settings → General → VPN &amp; Device Management</strong>.</li>
             <li>Install it from there, then enable it under <strong>Settings → General → About → Certificate Trust Settings</strong>. <span class="caveat">The install profile above avoids this Files-app detour — prefer it.</span></li>
           </ol>
         </details>
@@ -167,9 +166,9 @@
       <details id="android">
         <summary>Android</summary>
         <ol>
-          <li>Tap <strong>Download</strong> above to save <code>halos-ca.crt</code>.</li>
+          <li>Tap <strong>Download</strong> above to save <code data-cert-filename>halos-ca.crt</code>.</li>
           <li>Open <strong>Settings</strong>, search for <strong>cert</strong>, and choose <strong>CA certificate</strong> under <em>Install a certificate</em>. <span class="caveat">Searching jumps straight to the right screen — the manual path (Security → Encryption &amp; credentials) is several taps deep and varies by vendor.</span></li>
-          <li>Accept the warning and pick the downloaded <code>halos-ca.crt</code>.</li>
+          <li>Accept the warning and pick the downloaded <code data-cert-filename>halos-ca.crt</code>.</li>
         </ol>
         <p class="caveat">Android trusts user-installed CAs in browsers only, not in apps — this is an Android design decision. You will get a green lock in Chrome or Brave; native apps still show warnings.</p>
       </details>
@@ -178,25 +177,25 @@
         <summary>Linux (Debian / Ubuntu)</summary>
         <p>System trust store (Chromium, Chrome, curl, most apps):</p>
         <ol>
-          <li>Download <code>halos-ca.crt</code>.</li>
+          <li>Download <code data-cert-filename>halos-ca.crt</code>.</li>
           <li>Install it:
-            <pre>sudo cp halos-ca.crt /usr/local/share/ca-certificates/halos-ca.crt
+            <pre>sudo cp <span data-cert-filename>halos-ca.crt</span> /usr/local/share/ca-certificates/<span data-cert-filename>halos-ca.crt</span>
 sudo update-ca-certificates</pre>
           </li>
           <li>Restart Chromium or Chrome.</li>
         </ol>
-        <p class="caveat">Firefox keeps its own certificate store: <strong>Settings → Privacy &amp; Security → Certificates → View Certificates → Authorities → Import</strong>, select <code>halos-ca.crt</code>, and trust it for websites.</p>
+        <p class="caveat">Firefox keeps its own certificate store: <strong>Settings → Privacy &amp; Security → Certificates → View Certificates → Authorities → Import</strong>, select <code data-cert-filename>halos-ca.crt</code>, and trust it for websites.</p>
       </details>
 
       <details id="windows">
         <summary>Windows</summary>
         <ol>
-          <li>Download <code>halos-ca.crt</code>.</li>
+          <li>Download <code data-cert-filename>halos-ca.crt</code>.</li>
           <li>Double-click it and choose <strong>Install Certificate → Local Machine</strong> (accept the admin prompt).</li>
           <li>Select <strong>Place all certificates in the following store → Trusted Root Certification Authorities</strong>, then finish.</li>
           <li>Restart your browser.</li>
         </ol>
-        <p class="caveat">Chrome and Edge use the Windows certificate store automatically. Firefox keeps its own store: either set <code>security.enterprise_roots.enabled</code> to <code>true</code> in <code>about:config</code> (Firefox then trusts the certificate you just installed), or import <code>halos-ca.crt</code> directly as described in the Linux section.</p>
+        <p class="caveat">Chrome and Edge use the Windows certificate store automatically. Firefox keeps its own store: either set <code>security.enterprise_roots.enabled</code> to <code>true</code> in <code>about:config</code> (Firefox then trusts the certificate you just installed), or import <code data-cert-filename>halos-ca.crt</code> directly as described in the Linux section.</p>
       </details>
 
       <footer>
@@ -227,21 +226,22 @@ sudo update-ca-certificates</pre>
           if (match) match.open = true;
         }
 
-        // The page is served from the device being accessed, so its hostname
-        // is window.location.hostname — no server-side injection needed.
+        // The download itself is named server-side (the cert endpoint's
+        // Content-Disposition overrides any client `download` attribute). The
+        // instructions, though, reference that filename by name, so fill them in
+        // to match — using the SAME derivation as the cert CGI so the shown name
+        // equals the saved name: strip IPv6 brackets, sanitize to
+        // [A-Za-z0-9._-], cap at 64, trim separators.
         var host = window.location.hostname || "";
-
-        // Device-specific saved filename so several devices' certs are
-        // distinguishable in a Downloads folder. The URL path stays
-        // /ca/halos-ca.crt; only the Content-Disposition-equivalent (the
-        // download attribute) changes. Sanitize to a filesystem-safe name —
-        // dots and hyphens pass (DNS names, IPv4 literals); an IPv6 literal's
-        // colons collapse to "-". Empty host falls back to the bare name.
-        var safe = host.replace(/[^A-Za-z0-9._-]/g, "-");
-        var filename = safe ? "halos-ca-" + safe + ".crt" : "halos-ca.crt";
-        var anchors = document.querySelectorAll("a[data-cert-download]");
-        for (var i = 0; i < anchors.length; i++) {
-          anchors[i].setAttribute("download", filename);
+        var safe = host
+          .replace(/^\[|\]$/g, "")
+          .replace(/[^A-Za-z0-9._-]/g, "-")
+          .slice(0, 64)
+          .replace(/^[._-]+|[._-]+$/g, "");
+        var certFile = safe ? "halos-ca-" + safe + ".crt" : "halos-ca.crt";
+        var nameEls = document.querySelectorAll("[data-cert-filename]");
+        for (var k = 0; k < nameEls.length; k++) {
+          nameEls[k].textContent = certFile;
         }
 
         // Name the device wherever the steps reference it as context for the
