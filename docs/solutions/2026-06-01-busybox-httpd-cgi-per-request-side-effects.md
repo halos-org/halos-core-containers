@@ -38,12 +38,14 @@ Traefik TLS — an absolute `http://` would downgrade the client).
 
 # Traps that cost time
 
-1. **CGI stdout is buffered by httpd.** A "flush body, then act" design gives
-   **no** torn-download/SIGPIPE protection for any payload that fits one socket
-   buffer (~64 KB) — every real cert flushes in one write and the side effect
-   runs regardless of client disconnect. SIGPIPE-abort only happens for payloads
-   larger than the buffer. Don't claim a "client confirmed receipt" guarantee
-   for small responses; design the side effect to be safe under premature firing.
+1. **CGI stdout is buffered by httpd.** A "flush body, then act" design does
+   **not** protect against premature firing for any payload that fits one socket
+   buffer (~64 KB): the body flushes in a single write that completes before any
+   client disconnect is observable, so the side effect runs even if the client
+   aborted mid-transfer. A broken-pipe SIGPIPE can abort the side effect only for
+   payloads *larger* than the buffer (every real cert is smaller). Don't claim a
+   "client confirmed receipt" guarantee for small responses; design the side
+   effect to be safe under premature firing.
 
 2. **Nested read-only bind mounts fail.** Mounting a file at `/www/ca/x` when
    `/www/ca` is itself a `:ro` bind mount errors with *"read-only file system"*
