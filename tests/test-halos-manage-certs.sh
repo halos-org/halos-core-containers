@@ -68,8 +68,15 @@ run_test() {
 # COCKPIT_WS_CERTS_DIR is created so the cockpit-override branch runs.
 new_scratch() {
     local d="$TMPDIR_ROOT/$1"
-    mkdir -p "$d/data" "$d/etc" "$d/custom-ca" "$d/cockpit-certs" "$d/traefik-dynamic"
+    mkdir -p "$d/data" "$d/etc" "$d/custom-ca" "$d/cockpit-certs" "$d/traefik-dynamic" "$d/system-trust"
     printf '%s\n' "fixture.test" > "$d/hostnames.conf"
+    # Stub update-ca-certificates: record each invocation so tests can assert
+    # the host trust store was (or was not) rebuilt.
+    cat > "$d/fake-update-ca" <<EOF
+#!/bin/sh
+echo ran >> "$d/update-ca-ran"
+EOF
+    chmod +x "$d/fake-update-ca"
     printf '%s' "$d"
 }
 
@@ -106,6 +113,8 @@ run_script() {
     HALOS_COCKPIT_WS_CERTS_DIR="$d/cockpit-certs" \
     HALOS_TRAEFIK_DYNAMIC_DIR="$d/traefik-dynamic" \
     HALOS_HOSTNAMES_FILE="$d/hostnames.conf" \
+    HALOS_SYSTEM_TRUST_DIR="$d/system-trust" \
+    HALOS_UPDATE_CA_CMD="$d/fake-update-ca" \
     PACKAGE_NAME="halos-core-containers" \
     CONTAINER_DATA_ROOT="$d/data" \
     bash "$SCRIPT"
@@ -123,6 +132,8 @@ _download_name_file() { printf '%s' "$1/data/halos-core-containers/certs/public/
 _public_mobileconfig() { printf '%s' "$1/data/halos-core-containers/certs/public/halos-ca.mobileconfig"; }
 _cockpit_override() { printf '%s' "$1/cockpit-certs/99-halos.cert"; }
 _traefik_tls_config() { printf '%s' "$1/traefik-dynamic/tls-default.yml"; }
+_system_trust_ca() { printf '%s' "$1/system-trust/halos-ca.crt"; }
+_update_ca_marker() { printf '%s' "$1/update-ca-ran"; }
 
 # ---------------------------------------------------------------------------
 
@@ -967,6 +978,54 @@ test_custom_ca_cn_untouched() {
     assert_no_file "$(_auto_ca_crt "$d")" "auto CA must not be generated in custom mode" || return 1
 }
 
+test_first_boot_installs_ca_in_system_trust() {
+    # #158: the device self-trusts its own CA. First boot must install the
+    # active CA into the host trust store and rebuild the bundle.
+    local d; d=$(new_scratch systrust_first_boot)
+    run_script "$d" >/dev/null
+    assert_file "$(_system_trust_ca "$d")" "host trust-store CA copy" || return 1
+    assert_file "$(_update_ca_marker "$d")" "update-ca-certificates must run on first boot" || return 1
+    if ! cmp -s "$(_public_ca "$d")" "$(_system_trust_ca "$d")"; then
+        echo "host trust-store CA must match the active (published) CA"; return 1
+    fi
+}
+
+test_idempotent_rerun_skips_system_trust_update() {
+    # The renewal timer re-fires on every cycle; an unchanged CA must NOT
+    # rebuild the host bundle.
+    local d; d=$(new_scratch systrust_rerun)
+    run_script "$d" >/dev/null
+    assert_file "$(_update_ca_marker "$d")" "precondition: first boot rebuilt the bundle" || return 1
+    rm -f "$(_update_ca_marker "$d")"
+    sleep 1
+    run_script "$d" >/dev/null
+    assert_no_file "$(_update_ca_marker "$d")" "update must NOT re-run when the CA is unchanged" || return 1
+}
+
+test_ca_rotation_reinstalls_system_trust() {
+    # A rotated CA (expired → regenerated) must re-install into the trust store
+    # and rebuild the bundle.
+    local d; d=$(new_scratch systrust_rotation)
+    run_script "$d" >/dev/null
+    rm -f "$(_update_ca_marker "$d")"
+    local nb na
+    nb=$(date -u -d "@$(( $(date -u +%s) - 30 * 86400 ))" +%Y%m%d%H%M%SZ 2>/dev/null \
+        || date -u -r "$(( $(date -u +%s) - 30 * 86400 ))" +%Y%m%d%H%M%SZ)
+    na=$(date -u -d "@$(( $(date -u +%s) - 86400 ))" +%Y%m%d%H%M%SZ 2>/dev/null \
+        || date -u -r "$(( $(date -u +%s) - 86400 ))" +%Y%m%d%H%M%SZ)
+    openssl req -x509 -nodes -key "$(_auto_ca_key "$d")" -out "$(_auto_ca_crt "$d")" \
+        -not_before "$nb" -not_after "$na" -subj "/CN=Expired Auto CA" \
+        -addext "basicConstraints=critical,CA:TRUE,pathlen:0" \
+        -addext "keyUsage=critical,keyCertSign,cRLSign" >/dev/null 2>&1 \
+        || { echo "expired-CA fixture failed"; return 1; }
+    sleep 1
+    run_script "$d" >/dev/null
+    assert_file "$(_update_ca_marker "$d")" "update must re-run on CA rotation" || return 1
+    if ! cmp -s "$(_public_ca "$d")" "$(_system_trust_ca "$d")"; then
+        echo "host trust-store CA must track the rotated CA"; return 1
+    fi
+}
+
 # ---------------------------------------------------------------------------
 
 run_test test_first_boot_bootstrap_creates_all_artifacts
@@ -1004,6 +1063,9 @@ run_test test_adopted_rename_freezes_cn
 run_test test_legacy_bare_cn_frozen_on_rename
 run_test test_expiry_regen_uses_current_hostname_when_adopted
 run_test test_custom_ca_cn_untouched
+run_test test_first_boot_installs_ca_in_system_trust
+run_test test_idempotent_rerun_skips_system_trust_update
+run_test test_ca_rotation_reinstalls_system_trust
 
 echo
 echo "Passed: $PASSES, Failed: $FAILS"

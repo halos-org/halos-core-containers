@@ -20,6 +20,8 @@
 #                                              copy active CA into a public-bindmount target
 #   - halos_ca_publish_mobileconfig <src_crt> <public_dir> <display_host>
 #                                              generate an Apple .mobileconfig carrying the CA
+#   - halos_ca_publish_system_trust <src_crt> <trust_dir> [update_cmd]
+#                                              install active CA into host trust store + rebuild
 #
 # Generated certs carry the extensions browsers + OS trust stores require:
 #   CA   — basicConstraints CA:TRUE (so importing as trust anchor actually works),
@@ -767,6 +769,85 @@ halos_ca_publish_public() {
     if ! mv "$public_new" "$public_file"; then
         rm -f "$public_new"
         echo "halos_ca_publish_public: failed to mv $public_new to $public_file; previous copy (if any) is preserved" >&2
+        return 1
+    fi
+}
+
+# halos_ca_publish_system_trust <src_crt> <trust_dir> [update_cmd]
+# Install <src_crt> into the host CA trust store at <trust_dir>/halos-ca.crt
+# (mode 0644) and run <update_cmd> (default update-ca-certificates) so the
+# device's own desktop browser and CLI tools validate its HTTPS endpoints with
+# no operator action. The atomic stage+mv and X.509-parse check mirror
+# halos_ca_publish_public.
+#
+# Idempotent by design: when the installed copy already matches <src_crt>
+# byte-for-byte, the file is left untouched and <update_cmd> is NOT run.
+# halos-manage-certs re-fires on every boot and on the 24h renewal timer;
+# rebuilding the system bundle each time would be pure churn. Only a CA
+# rotation (content change) re-triggers the rebuild.
+#
+# Failure semantics: on any failure leaves the pre-existing trust copy (if any)
+# untouched, removes the .new sibling, returns non-zero.
+#
+# Return codes:
+#   0 — success (installed + rebuilt, or already current)
+#   1 — runtime failure (missing source, write/chmod/mv error, parse fail,
+#       update_cmd failure)
+#   2 — caller bug (missing args)
+halos_ca_publish_system_trust() {
+    local src_crt="$1" trust_dir="$2" update_cmd="${3:-update-ca-certificates}"
+    if [ -z "$src_crt" ] || [ -z "$trust_dir" ]; then
+        echo "halos_ca_publish_system_trust: <src_crt> <trust_dir> both required" >&2
+        return 2
+    fi
+    if [ ! -f "$src_crt" ]; then
+        echo "halos_ca_publish_system_trust: source cert missing: $src_crt" >&2
+        return 1
+    fi
+
+    local trust_file="${trust_dir}/halos-ca.crt"
+    # Already current: skip the costly bundle rebuild. This is the common path
+    # on every non-rotation run.
+    if [ -f "$trust_file" ] && cmp -s "$src_crt" "$trust_file"; then
+        return 0
+    fi
+
+    if ! mkdir -p "$trust_dir"; then
+        echo "halos_ca_publish_system_trust: failed to mkdir $trust_dir" >&2
+        return 1
+    fi
+
+    local trust_new="${trust_file}.new.$$"
+    rm -f "$trust_new"
+
+    if ! cp "$src_crt" "$trust_new"; then
+        rm -f "$trust_new"
+        echo "halos_ca_publish_system_trust: failed to cp $src_crt to $trust_new" >&2
+        return 1
+    fi
+    if ! openssl x509 -in "$trust_new" -noout 2>/dev/null; then
+        rm -f "$trust_new"
+        echo "halos_ca_publish_system_trust: copied file at $trust_new does not parse as an X.509 certificate" >&2
+        return 1
+    fi
+    if ! chmod 0644 "$trust_new"; then
+        rm -f "$trust_new"
+        echo "halos_ca_publish_system_trust: chmod 0644 failed on $trust_new" >&2
+        return 1
+    fi
+    if [ -d "$trust_file" ]; then
+        rm -f "$trust_new"
+        echo "halos_ca_publish_system_trust: refusing to install over directory at $trust_file" >&2
+        return 1
+    fi
+    if ! mv "$trust_new" "$trust_file"; then
+        rm -f "$trust_new"
+        echo "halos_ca_publish_system_trust: failed to mv $trust_new to $trust_file; previous copy (if any) is preserved" >&2
+        return 1
+    fi
+
+    if ! "$update_cmd" >/dev/null 2>&1; then
+        echo "halos_ca_publish_system_trust: $update_cmd failed; trust file installed but the system bundle was not rebuilt" >&2
         return 1
     fi
 }

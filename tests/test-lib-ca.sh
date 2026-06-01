@@ -1187,6 +1187,135 @@ test_publish_public_no_new_debris_on_success() {
     ! ls "$pub"/halos-ca.crt.new.* >/dev/null 2>&1 || { echo ".new.<pid> sibling should not remain after success"; return 1; }
 }
 
+# A stub update-ca-certificates that records each invocation by appending a
+# line to <dir>/update-ran. Echoes the script path.
+_make_update_stub() {
+    local dir="$1"
+    local stub="$dir/fake-update-ca"
+    cat > "$stub" <<EOF
+#!/bin/sh
+echo ran >> "$dir/update-ran"
+EOF
+    chmod +x "$stub"
+    printf '%s' "$stub"
+}
+
+test_publish_system_trust_happy_path() {
+    local d="$TMPDIR_ROOT/case_systrust_happy"
+    local trust="$d/trust"
+    mkdir -p "$d"
+    halos_ca_ensure_auto "$d" || return 1
+    local upd; upd=$(_make_update_stub "$d")
+    halos_ca_publish_system_trust "$d/ca.crt" "$trust" "$upd" \
+        || { echo "publish_system_trust returned non-zero"; return 1; }
+    [ -f "$trust/halos-ca.crt" ] || { echo "trust file not created"; return 1; }
+    local mode; mode=$(_stat_mode "$trust/halos-ca.crt")
+    assert_eq "$mode" "644" "trust file mode must be 0644" || return 1
+    if ! cmp -s "$d/ca.crt" "$trust/halos-ca.crt"; then
+        echo "trust file content does not match source"; return 1
+    fi
+    [ -f "$d/update-ran" ] || { echo "update-ca-certificates stub was not run"; return 1; }
+}
+
+test_publish_system_trust_skips_update_when_current() {
+    # The renewal timer re-fires this path on every run; an unchanged CA must
+    # NOT rebuild the bundle.
+    local d="$TMPDIR_ROOT/case_systrust_skip"
+    local trust="$d/trust"
+    mkdir -p "$d"
+    halos_ca_ensure_auto "$d" || return 1
+    local upd; upd=$(_make_update_stub "$d")
+    halos_ca_publish_system_trust "$d/ca.crt" "$trust" "$upd" || return 1
+    rm -f "$d/update-ran"
+    halos_ca_publish_system_trust "$d/ca.crt" "$trust" "$upd" || return 1
+    [ ! -f "$d/update-ran" ] || { echo "update must NOT re-run when CA is unchanged"; return 1; }
+}
+
+test_publish_system_trust_runs_update_on_rotation() {
+    # A rotated (content-changed) CA must re-install and rebuild the bundle.
+    local da="$TMPDIR_ROOT/case_systrust_rot_a"
+    local db="$TMPDIR_ROOT/case_systrust_rot_b"
+    local trust="$TMPDIR_ROOT/case_systrust_rot_trust"
+    mkdir -p "$da" "$db"
+    halos_ca_ensure_auto "$da" || return 1
+    halos_ca_ensure_auto "$db" || return 1
+    local upd; upd=$(_make_update_stub "$TMPDIR_ROOT")
+    halos_ca_publish_system_trust "$da/ca.crt" "$trust" "$upd" || return 1
+    rm -f "$TMPDIR_ROOT/update-ran"
+    halos_ca_publish_system_trust "$db/ca.crt" "$trust" "$upd" || return 1
+    [ -f "$TMPDIR_ROOT/update-ran" ] || { echo "update must re-run on CA rotation"; return 1; }
+    if ! cmp -s "$db/ca.crt" "$trust/halos-ca.crt"; then
+        echo "rotated trust file does not match new source"; return 1
+    fi
+    rm -f "$TMPDIR_ROOT/update-ran"
+}
+
+test_publish_system_trust_missing_args_errors() {
+    halos_ca_publish_system_trust "" "" >/dev/null 2>&1
+    local rc=$?
+    assert_eq "$rc" "2" "missing args must exit 2 (caller bug)" || return 1
+}
+
+test_publish_system_trust_missing_source_errors() {
+    local d="$TMPDIR_ROOT/case_systrust_missing_src"
+    mkdir -p "$d"
+    halos_ca_publish_system_trust "$d/nope.crt" "$d/trust" >/dev/null 2>&1
+    local rc=$?
+    assert_eq "$rc" "1" "missing source must exit 1 (runtime failure)" || return 1
+    [ ! -f "$d/trust/halos-ca.crt" ] || { echo "no output should be written"; return 1; }
+}
+
+test_publish_system_trust_rejects_non_cert_source() {
+    local d="$TMPDIR_ROOT/case_systrust_bad_src"
+    local trust="$d/trust"
+    mkdir -p "$d"
+    printf 'not a certificate\n' > "$d/bad.crt"
+    local upd; upd=$(_make_update_stub "$d")
+    halos_ca_publish_system_trust "$d/bad.crt" "$trust" "$upd" >/dev/null 2>&1
+    local rc=$?
+    assert_eq "$rc" "1" "non-cert source must exit 1" || return 1
+    [ ! -f "$trust/halos-ca.crt" ] || { echo "no output should be written"; return 1; }
+    [ ! -f "$d/update-ran" ] || { echo "update must NOT run when source is rejected"; return 1; }
+    ! ls "$trust"/halos-ca.crt.new.* >/dev/null 2>&1 || { echo "no .new debris should remain"; return 1; }
+}
+
+test_publish_system_trust_preserves_existing_on_failure() {
+    local d="$TMPDIR_ROOT/case_systrust_preserve"
+    local trust="$d/trust"
+    mkdir -p "$d"
+    halos_ca_ensure_auto "$d" || return 1
+    local upd; upd=$(_make_update_stub "$d")
+    halos_ca_publish_system_trust "$d/ca.crt" "$trust" "$upd" || return 1
+    local good_hash; good_hash=$(openssl dgst -sha256 "$trust/halos-ca.crt" | awk '{print $NF}')
+    printf 'not a certificate\n' > "$d/bad.crt"
+    halos_ca_publish_system_trust "$d/bad.crt" "$trust" "$upd" >/dev/null 2>&1
+    local after_hash; after_hash=$(openssl dgst -sha256 "$trust/halos-ca.crt" | awk '{print $NF}')
+    assert_eq "$after_hash" "$good_hash" "previous trust file must be preserved on failure" || return 1
+}
+
+test_publish_system_trust_refuses_directory_at_output() {
+    local d="$TMPDIR_ROOT/case_systrust_dir_at_out"
+    local trust="$d/trust"
+    mkdir -p "$d" "$trust/halos-ca.crt"
+    halos_ca_ensure_auto "$d" || return 1
+    local upd; upd=$(_make_update_stub "$d")
+    halos_ca_publish_system_trust "$d/ca.crt" "$trust" "$upd" >/dev/null 2>&1
+    local rc=$?
+    assert_eq "$rc" "1" "directory at output must exit 1" || return 1
+    [ -d "$trust/halos-ca.crt" ] || { echo "directory must be preserved"; return 1; }
+    ! ls "$trust"/halos-ca.crt.new.* >/dev/null 2>&1 || { echo "no .new debris should remain"; return 1; }
+}
+
+test_publish_system_trust_no_new_debris_on_success() {
+    local d="$TMPDIR_ROOT/case_systrust_no_debris"
+    local trust="$d/trust"
+    mkdir -p "$d"
+    halos_ca_ensure_auto "$d" || return 1
+    local upd; upd=$(_make_update_stub "$d")
+    halos_ca_publish_system_trust "$d/ca.crt" "$trust" "$upd" || return 1
+    ! ls "$trust"/halos-ca.crt.new.* >/dev/null 2>&1 || { echo ".new.<pid> sibling should not remain after success"; return 1; }
+}
+
 # Decode the base64 <data> payload from a .mobileconfig into a DER file.
 # Pulls the single-line base64 between the <data> tags (our generator emits it
 # flattened), strips whitespace, and base64-decodes. Echoes the DER path.
@@ -1785,6 +1914,15 @@ run_test test_publish_public_rejects_non_cert_source
 run_test test_publish_public_preserves_existing_on_failure
 run_test test_publish_public_refuses_directory_at_output
 run_test test_publish_public_no_new_debris_on_success
+run_test test_publish_system_trust_happy_path
+run_test test_publish_system_trust_skips_update_when_current
+run_test test_publish_system_trust_runs_update_on_rotation
+run_test test_publish_system_trust_missing_args_errors
+run_test test_publish_system_trust_missing_source_errors
+run_test test_publish_system_trust_rejects_non_cert_source
+run_test test_publish_system_trust_preserves_existing_on_failure
+run_test test_publish_system_trust_refuses_directory_at_output
+run_test test_publish_system_trust_no_new_debris_on_success
 run_test test_publish_mobileconfig_happy_path
 run_test test_publish_mobileconfig_der_round_trips
 run_test test_publish_mobileconfig_embeds_display_host
