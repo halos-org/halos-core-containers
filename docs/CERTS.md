@@ -234,12 +234,17 @@ sidecar that serves the file returns it with:
 OS-level certificate install dialog instead of rendering the PEM as plain text.
 
 The saved filename is device-specific (`halos-ca-<host>.crt`) so several
-devices' certs are distinguishable in a Downloads folder. It is built **in the
-CGI** from the request `Host` header (port stripped, sanitized to
-`[A-Za-z0-9._-]`) — *not* client-side: a server `Content-Disposition` filename
-overrides an HTML `download` attribute, so a page-set name would never take
-effect. Accessed by raw IP, `<host>` is that IP. The URL path itself never
-changes.
+devices' certs are distinguishable in a Downloads folder. It is derived from the
+**active CA's subject CN** — i.e. the cert's own identity (the name the trust
+store shows), not how the page was reached — so a bare-CN / custom CA correctly
+downloads as the generic `halos-ca.crt`. Because busybox has no `openssl`, the
+cert-manager computes the name (`halos_ca_download_filename`) and writes it to
+`${PUBLIC_CA_DIR}/download-filename`; the CGI reads that for the
+`Content-Disposition`. This is server-side by necessity: a server
+`Content-Disposition` filename overrides an HTML `download` attribute, so a
+page-set name never takes effect. The landing page learns the name with a `HEAD`
+of the cert endpoint, so its instructions show the exact saved name. The URL
+path itself never changes.
 
 **The sidecar is `busybox httpd` + small CGI scripts** (not nginx): serving the
 `.crt` or `.mobileconfig` records first download by flipping the adoption

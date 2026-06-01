@@ -1668,6 +1668,27 @@ test_cn_hostname_empty_for_custom_cn() {
     assert_eq "$(halos_ca_cn_hostname "$d/ca.crt")" "" "non-device CN must yield empty hostname" || return 1
 }
 
+test_download_filename_device_cn() {
+    local d="$TMPDIR_ROOT/case_dlname_dev"
+    mkdir -p "$d"
+    _mk_ca_with_cn "$d/ca.crt" "HaLOS Device CA (halosdev.local)" || { echo "fixture failed"; return 1; }
+    assert_eq "$(halos_ca_download_filename "$d/ca.crt")" "halos-ca-halosdev.local.crt" "device CN yields device filename" || return 1
+}
+
+test_download_filename_bare_cn_is_generic() {
+    local d="$TMPDIR_ROOT/case_dlname_bare"
+    mkdir -p "$d"
+    _mk_ca_with_cn "$d/ca.crt" "HaLOS Device CA" || { echo "fixture failed"; return 1; }
+    assert_eq "$(halos_ca_download_filename "$d/ca.crt")" "halos-ca.crt" "bare CN yields generic filename" || return 1
+}
+
+test_download_filename_custom_cn_is_generic() {
+    local d="$TMPDIR_ROOT/case_dlname_custom"
+    mkdir -p "$d"
+    _mk_ca_with_cn "$d/ca.crt" "Acme Corp Root" || { echo "fixture failed"; return 1; }
+    assert_eq "$(halos_ca_download_filename "$d/ca.crt")" "halos-ca.crt" "custom CN yields generic filename" || return 1
+}
+
 test_select_active_threads_hostname_to_auto() {
     local d="$TMPDIR_ROOT/case_select_hostname"
     mkdir -p "$d/custom" "$d/auto"
@@ -1802,6 +1823,9 @@ run_test test_ensure_auto_bare_cn_without_hostname
 run_test test_ensure_auto_cn_round_trips
 run_test test_cn_hostname_empty_for_bare_cn
 run_test test_cn_hostname_empty_for_custom_cn
+run_test test_download_filename_device_cn
+run_test test_download_filename_bare_cn_is_generic
+run_test test_download_filename_custom_cn_is_generic
 run_test test_select_active_threads_hostname_to_auto
 run_test test_select_active_custom_cn_untouched_with_hostname
 

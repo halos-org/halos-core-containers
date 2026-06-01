@@ -119,6 +119,7 @@ _auto_ca_crt() { printf '%s' "$1/data/halos-core-containers/certs/ca/ca.crt"; }
 _auto_ca_key() { printf '%s' "$1/data/halos-core-containers/certs/ca/ca.key"; }
 _public_ca() { printf '%s' "$1/data/halos-core-containers/certs/public/halos-ca.crt"; }
 _adoption_file() { printf '%s' "$1/data/halos-core-containers/certs/ca/adoption"; }
+_download_name_file() { printf '%s' "$1/data/halos-core-containers/certs/public/download-filename"; }
 _public_mobileconfig() { printf '%s' "$1/data/halos-core-containers/certs/public/halos-ca.mobileconfig"; }
 _cockpit_override() { printf '%s' "$1/cockpit-certs/99-halos.cert"; }
 _traefik_tls_config() { printf '%s' "$1/traefik-dynamic/tls-default.yml"; }
@@ -833,6 +834,23 @@ test_first_boot_auto_ca_cn_names_device() {
     assert_eq "$(_ca_cn "$(_auto_ca_crt "$d")")" "HaLOS Device CA (fixture.test)" "first-boot auto CA CN must name the device" || return 1
 }
 
+test_first_boot_publishes_device_download_filename() {
+    # The published download-filename hint (read by the ca-download CGI) is
+    # derived from the active CA's CN, so the saved file names the device.
+    local d; d=$(new_scratch dl_name)
+    run_script "$d" >/dev/null
+    assert_eq "$(cat "$(_download_name_file "$d")")" "halos-ca-fixture.test.crt" "download filename names the device" || return 1
+}
+
+test_legacy_bare_cn_download_filename_is_generic() {
+    # A frozen bare-CN CA has no device name, so the download filename stays
+    # generic — the file is named after the cert's identity.
+    local d; d=$(new_scratch dl_name_legacy)
+    _seed_auto_ca_with_cn "$d" "HaLOS Device CA" || { echo "seed failed"; return 1; }
+    run_script "$d" >/dev/null
+    assert_eq "$(cat "$(_download_name_file "$d")")" "halos-ca.crt" "bare-CN CA → generic download filename" || return 1
+}
+
 test_pending_rename_refreshes_cn() {
     # An unadopted device renamed before any download: the next run regenerates
     # the CA with the new CN (distinct from a plain hostname change, which
@@ -977,6 +995,8 @@ run_test test_legacy_bare_cn_ca_stamped_adopted
 run_test test_adoption_sentinel_preserved_on_rerun
 run_test test_publish_public_failure_logs_error
 run_test test_first_boot_auto_ca_cn_names_device
+run_test test_first_boot_publishes_device_download_filename
+run_test test_legacy_bare_cn_download_filename_is_generic
 run_test test_pending_rename_refreshes_cn
 run_test test_pending_rename_end_of_run_consistency
 run_test test_pending_no_rename_no_regen

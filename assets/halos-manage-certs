@@ -168,6 +168,22 @@ if ! halos_ca_publish_mobileconfig "${HALOS_CA_ACTIVE_CRT}" "${PUBLIC_CA_DIR}" "
     echo "WARNING: failed to refresh Apple .mobileconfig at ${PUBLIC_CA_DIR}/halos-ca.mobileconfig; the /ca/halos-ca.mobileconfig endpoint may serve stale or no profile until the next successful run." >&2
 fi
 
+# Publish the device-specific download filename (derived from the active CA's
+# subject CN) next to the public PEM, so the ca-download sidecar can name the
+# download after the cert's identity. busybox has no openssl to read the CN, so
+# the name is computed here and read by the CGI. Auxiliary: a failure leaves the
+# sidecar to fall back to the generic halos-ca.crt.
+# Write atomically (stage + mv) so a per-request CGI read never sees the new CA
+# alongside a half-written or stale name — matching halos_ca_publish_public.
+DL_NAME_NEW="${PUBLIC_CA_DIR}/download-filename.new.$$"
+if halos_ca_download_filename "${HALOS_CA_ACTIVE_CRT}" > "${DL_NAME_NEW}" 2>/dev/null \
+   && mv "${DL_NAME_NEW}" "${PUBLIC_CA_DIR}/download-filename"; then
+    :
+else
+    rm -f "${DL_NAME_NEW}"
+    echo "WARNING: failed to write download-filename hint at ${PUBLIC_CA_DIR}/download-filename; the cert download falls back to the generic halos-ca.crt name." >&2
+fi
+
 # Explicit guard: `set -e` does NOT abort on command-substitution failure
 # in an assignment. Without it, a corrupt CA silently yields CA_FINGERPRINT=""
 # and feeds a malformed sentinel into downstream comparison — an infinite

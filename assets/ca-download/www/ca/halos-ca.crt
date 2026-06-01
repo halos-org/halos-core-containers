@@ -19,29 +19,26 @@ set -u
 CA_CRT="${HALOS_CA_PUBLIC_CRT:-/srv/halos-ca.crt}"
 ADOPTION="${HALOS_ADOPTION_FILE:-/adoption}"
 
-# Device-specific saved filename, derived from the Host the client used, so
-# several devices' certs are distinguishable in a Downloads folder. This MUST be
-# set server-side: a Content-Disposition filename from the server overrides an
-# HTML `download` attribute, so a client-side name never takes effect. The Host
-# is client-controlled, so sanitize to [A-Za-z0-9._-] (also trimming leading/
-# trailing separators) — this both yields a safe filename and blocks header
-# injection. Empty/again-unresolved Host falls back to the bare name.
-_host="${HTTP_HOST:-}"
-# Strip the port: a bracketed IPv6 host ([::1] or [::1]:443) keeps the address
-# inside the brackets; otherwise host[:port] drops at the first colon. (A bare,
-# unbracketed IPv6 Host is malformed per RFC 3986 and not handled specially.)
-case "$_host" in
-    \[*\]*) _host="${_host#\[}"; _host="${_host%%\]*}" ;;
-    *)      _host="${_host%%:*}" ;;
-esac
-# Sanitize (the Host is client-controlled), cap the length so the result stays a
-# valid <=255-byte filename component, then trim leading/trailing separators.
-_safe="$(printf '%s' "$_host" | tr -d '\r\n' | sed 's/[^A-Za-z0-9._-]/-/g')"
-_safe="$(printf '%.64s' "$_safe" | sed -e 's/^[._-]*//' -e 's/[._-]*$//')"
-if [ -n "$_safe" ]; then
-    CERT_FILENAME="halos-ca-${_safe}.crt"
-else
-    CERT_FILENAME="halos-ca.crt"
+# Device-specific saved filename, published by the cert-manager from the active
+# CA's subject CN (so the file is named after the cert's identity, not how the
+# page was reached). This MUST be set server-side: a Content-Disposition
+# filename overrides an HTML `download` attribute, so a page-set name never
+# takes effect. busybox has no openssl to read the CN, so the name is read from
+# a file the cert-manager writes. Validate it to a known-safe shape; fall back
+# to the generic name otherwise.
+NAME_FILE="${HALOS_CA_DOWNLOAD_NAME:-/srv/download-filename}"
+CERT_FILENAME="halos-ca.crt"
+if [ -f "$NAME_FILE" ]; then
+    _n="$(tr -d '\r\n' < "$NAME_FILE")"
+    case "$_n" in
+        halos-ca.crt) CERT_FILENAME="$_n" ;;
+        # require an alphanumeric right after the prefix (rejects halos-ca-.crt)
+        halos-ca-[A-Za-z0-9]*.crt)
+            case "$_n" in
+                *[!A-Za-z0-9._-]*) ;;
+                *)                 CERT_FILENAME="$_n" ;;
+            esac ;;
+    esac
 fi
 
 emit_headers() {

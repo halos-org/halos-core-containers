@@ -59,17 +59,19 @@ new_scratch() {
     { printf -- '-----BEGIN CERTIFICATE-----\n'; head -c "$bytes" /dev/zero | tr '\0' 'A'; printf '\n-----END CERTIFICATE-----\n'; } > "$d/halos-ca.crt"
     printf '<?xml version="1.0"?><plist>PROFILE</plist>\n' > "$d/halos-ca.mobileconfig"
     printf 'pending' > "$d/adoption"
+    # The cert-manager publishes the device download name here; default generic.
+    printf 'halos-ca.crt' > "$d/download-filename"
     printf '%s' "$d"
 }
 
 # Invoke a CGI with the scratch paths wired in. Usage:
-#   invoke <cgi> <scratch> <method> [http_host]
+#   invoke <cgi> <scratch> <method>
 invoke() {
     HALOS_CA_PUBLIC_CRT="$2/halos-ca.crt" \
     HALOS_CA_PUBLIC_PROFILE="$2/halos-ca.mobileconfig" \
     HALOS_ADOPTION_FILE="$2/adoption" \
+    HALOS_CA_DOWNLOAD_NAME="$2/download-filename" \
     REQUEST_METHOD="$3" \
-    HTTP_HOST="${4:-}" \
     sh "$1"
 }
 
@@ -89,70 +91,51 @@ test_cert_get_serves_and_adopts() {
     assert_eq "$(cat "$d/adoption")" "adopted" "completed GET must adopt" || return 1
 }
 
-test_cert_filename_from_host_is_device_specific() {
-    # The saved filename must be device-specific and come from the Host header
-    # (a server Content-Disposition filename overrides the page download attr).
-    local d; d=$(new_scratch cert_host)
-    local out; out=$(invoke "$CERT_CGI" "$d" GET halosdev.local)
-    assert_eq "$(cgi_hdr "$out" Content-Disposition)" 'attachment; filename="halos-ca-halosdev.local.crt"' "device-specific filename from Host" || return 1
+test_cert_filename_from_name_file_is_device_specific() {
+    # The saved filename comes from the cert-manager-published name file (derived
+    # from the CA's CN), so it names the cert's identity, not how the page was
+    # reached. (The CN-to-name derivation itself is tested in test-lib-ca.sh.)
+    local d; d=$(new_scratch cert_namefile)
+    printf 'halos-ca-halosdev.local.crt' > "$d/download-filename"
+    local out; out=$(invoke "$CERT_CGI" "$d" GET)
+    assert_eq "$(cgi_hdr "$out" Content-Disposition)" 'attachment; filename="halos-ca-halosdev.local.crt"' "device-specific filename from name file" || return 1
 }
 
-test_cert_filename_strips_host_port() {
-    local d; d=$(new_scratch cert_host_port)
-    local out; out=$(invoke "$CERT_CGI" "$d" GET "halosdev.local:8443")
-    assert_eq "$(cgi_hdr "$out" Content-Disposition)" 'attachment; filename="halos-ca-halosdev.local.crt"' "port stripped from filename" || return 1
+test_cert_filename_default_when_name_file_absent() {
+    local d; d=$(new_scratch cert_no_namefile)
+    rm -f "$d/download-filename"
+    local out; out=$(invoke "$CERT_CGI" "$d" GET)
+    assert_eq "$(cgi_hdr "$out" Content-Disposition)" 'attachment; filename="halos-ca.crt"' "generic name when file absent" || return 1
 }
 
-test_cert_filename_falls_back_without_host() {
-    local d; d=$(new_scratch cert_no_host)
-    local out; out=$(invoke "$CERT_CGI" "$d" GET "")
-    assert_eq "$(cgi_hdr "$out" Content-Disposition)" 'attachment; filename="halos-ca.crt"' "bare filename when Host absent" || return 1
-}
-
-test_cert_filename_sanitizes_malicious_host() {
-    # A crafted Host with separators/quotes/spaces must collapse to a safe
-    # filename — no header injection, no stray quotes.
-    local d; d=$(new_scratch cert_evil_host)
-    local out; out=$(invoke "$CERT_CGI" "$d" GET 'a/b "c.local')
-    assert_eq "$(cgi_hdr "$out" Content-Disposition)" 'attachment; filename="halos-ca-a-b--c.local.crt"' "host sanitized to safe filename" || return 1
-}
-
-test_cert_filename_no_crlf_header_injection() {
-    # A Host carrying a CRLF + a forged header must not inject one: CR/LF are
-    # stripped before sanitizing, so there is exactly one Content-Disposition
-    # line (with the forged text folded into the filename), and no Set-Cookie.
-    local d; d=$(new_scratch cert_crlf_host)
-    local out; out=$(invoke "$CERT_CGI" "$d" GET "$(printf 'evil\r\nSet-Cookie: pwned')")
-    assert_eq "$(cgi_hdr "$out" Content-Disposition)" 'attachment; filename="halos-ca-evilSet-Cookie.crt"' "CRLF folded into filename, not injected" || return 1
+test_cert_filename_rejects_unsafe_name_file() {
+    # A name file with anything outside the expected halos-ca[-<safe>].crt shape
+    # (e.g. tampering, header-breaking chars) falls back to the generic name —
+    # no quote-breakout or header injection from the file contents.
+    local d; d=$(new_scratch cert_bad_namefile)
+    printf 'evil" \r\nSet-Cookie: x.crt' > "$d/download-filename"
+    local out; out=$(invoke "$CERT_CGI" "$d" GET)
+    assert_eq "$(cgi_hdr "$out" Content-Disposition)" 'attachment; filename="halos-ca.crt"' "unsafe name file rejected" || return 1
     local cd_lines; cd_lines=$(printf '%s\n' "$out" | grep -ci '^Content-Disposition:')
     assert_eq "$cd_lines" "1" "exactly one Content-Disposition line" || return 1
-    if printf '%s\n' "$out" | grep -qi '^Set-Cookie:'; then
-        echo "CRLF in Host injected a header"; return 1
-    fi
+    if printf '%s\n' "$out" | grep -qi '^Set-Cookie:'; then echo "name file injected a header"; return 1; fi
 }
 
-test_cert_filename_ipv6_bracketed() {
-    # A bracketed IPv6 Host keeps the address (port stripped); colons collapse
-    # to "-", so two IPv6 devices still get distinguishable filenames.
-    local d; d=$(new_scratch cert_ipv6)
-    local out; out=$(invoke "$CERT_CGI" "$d" GET "[2001:db8::1]:443")
-    assert_eq "$(cgi_hdr "$out" Content-Disposition)" 'attachment; filename="halos-ca-2001-db8--1.crt"' "bracketed IPv6 filename" || return 1
-}
-
-test_cert_filename_length_capped() {
-    # An over-long Host must not produce a filename component over the 255-byte
-    # FS limit (which would truncate and could mask the .crt suffix).
-    local d; d=$(new_scratch cert_long_host)
-    local long; long=$(printf 'a%.0s' {1..300})
-    local out; out=$(invoke "$CERT_CGI" "$d" GET "${long}.local")
-    local expect; expect="attachment; filename=\"halos-ca-$(printf 'a%.0s' {1..64}).crt\""
-    assert_eq "$(cgi_hdr "$out" Content-Disposition)" "$expect" "host length capped at 64" || return 1
+test_cert_filename_rejects_empty_device_part() {
+    # A name with no device part after the prefix (halos-ca-.crt) — which the
+    # cert-manager never produces — must fall back to the generic name.
+    local d; d=$(new_scratch cert_empty_dev)
+    printf 'halos-ca-.crt' > "$d/download-filename"
+    local out; out=$(invoke "$CERT_CGI" "$d" GET)
+    assert_eq "$(cgi_hdr "$out" Content-Disposition)" 'attachment; filename="halos-ca.crt"' "empty device part rejected" || return 1
 }
 
 test_cert_head_uses_device_filename() {
-    # HEAD shares emit_headers, so it must carry the same device-specific name.
-    local d; d=$(new_scratch cert_head_host)
-    local out; out=$(invoke "$CERT_CGI" "$d" HEAD halosdev.local)
+    # HEAD shares emit_headers (the landing page reads the name via HEAD), so it
+    # must carry the same device-specific name.
+    local d; d=$(new_scratch cert_head_name)
+    printf 'halos-ca-halosdev.local.crt' > "$d/download-filename"
+    local out; out=$(invoke "$CERT_CGI" "$d" HEAD)
     assert_eq "$(cgi_hdr "$out" Content-Disposition)" 'attachment; filename="halos-ca-halosdev.local.crt"' "HEAD device filename" || return 1
 }
 
@@ -231,13 +214,10 @@ test_gone_returns_410_with_canonical_hint() {
 }
 
 run_test test_cert_get_serves_and_adopts
-run_test test_cert_filename_from_host_is_device_specific
-run_test test_cert_filename_strips_host_port
-run_test test_cert_filename_falls_back_without_host
-run_test test_cert_filename_sanitizes_malicious_host
-run_test test_cert_filename_no_crlf_header_injection
-run_test test_cert_filename_ipv6_bracketed
-run_test test_cert_filename_length_capped
+run_test test_cert_filename_from_name_file_is_device_specific
+run_test test_cert_filename_default_when_name_file_absent
+run_test test_cert_filename_rejects_unsafe_name_file
+run_test test_cert_filename_rejects_empty_device_part
 run_test test_cert_head_uses_device_filename
 run_test test_cert_get_adopt_is_in_place
 run_test test_cert_head_serves_headers_without_adopting

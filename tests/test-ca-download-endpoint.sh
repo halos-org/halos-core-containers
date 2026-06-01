@@ -55,6 +55,9 @@ trap cleanup EXIT
 mkdir -p "$TMP/srv"
 printf -- '-----BEGIN CERTIFICATE-----\ndummy\n-----END CERTIFICATE-----\n' > "$TMP/srv/halos-ca.crt"
 printf '<?xml version="1.0"?><plist></plist>\n' > "$TMP/srv/halos-ca.mobileconfig"
+# Device download filename the cert-manager would publish (from the CA's CN);
+# the cert CGI reads it for Content-Disposition.
+printf 'halos-ca-testdev.example.crt' > "$TMP/srv/download-filename"
 # Single-file adoption sentinel. 0666 so the dropped uid (65534) can rewrite it
 # regardless of host ownership (Linux CI) — production chowns it to that uid.
 SENTINEL="$TMP/adoption"
@@ -108,10 +111,10 @@ check "GET /healthz leaves sentinel"       "pending" "$(cat "$SENTINEL")"
 reset_sentinel
 check "GET /ca/halos-ca.crt status"        "200" "$(code "$BASE/ca/halos-ca.crt")"
 check "GET /ca/halos-ca.crt content-type"  "application/x-x509-ca-cert" "$(hdr Content-Type "$BASE/ca/halos-ca.crt")"
-# Device-specific filename derived server-side from the Host header (curl sends
-# Host: 127.0.0.1:<port>; the CGI strips the port). A server filename overrides
-# the page's download attribute, which is why this must come from the server.
-check "GET /ca/halos-ca.crt disposition"   'attachment; filename="halos-ca-127.0.0.1.crt"' "$(hdr Content-Disposition "$BASE/ca/halos-ca.crt")"
+# Device-specific filename from the cert-manager-published name file (derived
+# from the CA's CN). A server filename overrides the page's download attribute,
+# which is why this must come from the server.
+check "GET /ca/halos-ca.crt disposition"   'attachment; filename="halos-ca-testdev.example.crt"' "$(hdr Content-Disposition "$BASE/ca/halos-ca.crt")"
 # Cross-boundary: the in-container CGI flipped the host-visible sentinel.
 check "completed cert GET adopts"          "adopted" "$(cat "$SENTINEL")"
 # Idempotent: a second download with the sentinel already adopted is a no-op.
