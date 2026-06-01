@@ -162,7 +162,7 @@ CA is **unadopted**, and frozen permanently at **first download**.
 
 Adoption is one bit of state in a single file:
 
-    /var/lib/container-apps/halos-core-containers/certs/ca/adoption   # "pending" | "adopted"
+    /var/lib/container-apps/halos-core-containers/data/halos-core-containers/certs/ca/adoption   # "pending" | "adopted"
 
 - **`pending`** — never downloaded. On each `halos-manage-certs` run, if the
   resolved hostname differs from the CA's embedded name, the auto-CA is
@@ -199,7 +199,7 @@ new one** — reset the sentinel to `pending` and re-run cert management:
 
 ```
 echo -n pending | sudo tee \
-  /var/lib/container-apps/halos-core-containers/certs/ca/adoption
+  /var/lib/container-apps/halos-core-containers/data/halos-core-containers/certs/ca/adoption
 sudo systemctl start halos-manage-certs.service
 ```
 
@@ -207,6 +207,10 @@ The next run regenerates the auto-CA with the current hostname (a bare-CN legacy
 CA upgrades to a device-identifying name this way too), re-signs the leaf, and
 re-publishes. This is a one-file content edit — there is no need to delete
 `ca.crt`/`ca.key`.
+
+The refresh only fires when the CA's embedded name differs from the current
+hostname: resetting to `pending` on a CA that already names the current host is
+a no-op (no regeneration, no re-trust cost).
 
 ## CA download endpoint
 
@@ -221,16 +225,18 @@ shared with the trust-install landing page at `https://<host>/ca/`.)
 Plain HTTP requests to the same path are redirected to HTTPS (308). The
 sidecar that serves the file returns it with:
 
-| Header                | Value                                       |
-|-----------------------|---------------------------------------------|
-| `Content-Type`        | `application/x-x509-ca-cert`                |
-| `Content-Disposition` | `attachment; filename="halos-ca-<host>.crt"`|
+| Header                | Value                                  |
+|-----------------------|----------------------------------------|
+| `Content-Type`        | `application/x-x509-ca-cert`           |
+| `Content-Disposition` | `attachment; filename="halos-ca.crt"`  |
 
 `attachment` is the load-bearing piece: it causes browsers to open the
 OS-level certificate install dialog instead of rendering the PEM as plain
-text. The saved filename is made device-specific (`halos-ca-<hostname>.crt`)
-client-side from `window.location.hostname`, so several devices' certs are
-distinguishable in a Downloads folder; the URL path itself never changes.
+text. The server always sends the static `filename="halos-ca.crt"`; the landing
+page then rewrites the *saved* name to a device-specific `halos-ca-<hostname>.crt`
+client-side (via the download link's `download` attribute, from
+`window.location.hostname`), so several devices' certs are distinguishable in a
+Downloads folder. The URL path itself never changes.
 
 **The sidecar is `busybox httpd` + small CGI scripts** (not nginx): serving the
 `.crt` or `.mobileconfig` records first download by flipping the adoption
