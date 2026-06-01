@@ -88,18 +88,16 @@ def test_cert_url_path_unchanged():
     assert 'href="/ca/halos-ca.crt"' in HTML
 
 
-def test_cert_download_anchors_are_marked_and_have_download_attr():
-    # Every cert-download anchor carries the data-cert-download hook (so the JS
-    # can set a per-device filename) and a static download fallback (so the
-    # save name is sane with JS off). Count parity catches a new cert anchor
-    # added without the hook.
+def test_cert_download_anchors_have_download_attr():
+    # Every cert anchor keeps a static download attribute (a sensible fallback);
+    # the device-specific name itself is set server-side via Content-Disposition,
+    # not here (a server filename overrides the download attribute).
     import re
 
     cert_anchors = re.findall(r"<a\b[^>]*>", HTML)
     cert_anchors = [a for a in cert_anchors if 'href="/ca/halos-ca.crt"' in a]
     assert cert_anchors, "expected at least one cert-download anchor"
     for a in cert_anchors:
-        assert "data-cert-download" in a
         assert "download=" in a
 
 
@@ -108,10 +106,16 @@ def test_device_host_placeholder_present():
     assert "data-device-host" in HTML
 
 
-def test_device_filename_js_builds_per_device_name():
-    # The JS derives a sanitized halos-ca-<host>.crt filename from the hostname.
+def test_instruction_filenames_are_templated():
+    # Every visible reference to the downloaded file is hooked so the JS can
+    # rewrite it to the device-specific name (matching the server-set save
+    # name). The static text stays halos-ca.crt as the no-JS fallback.
+    assert "data-cert-filename" in HTML
+    # The Linux cp command references the file twice — both must be hooked, so
+    # a copy-pasted command names the file the user actually downloaded.
+    assert HTML.count("data-cert-filename") >= 2
+    # The JS derives the same halos-ca-<host>.crt name the CGI does.
     assert 'halos-ca-" + safe + ".crt' in HTML
-    assert "window.location.hostname" in HTML
 
 
 def test_device_name_falls_back_for_ip_access():

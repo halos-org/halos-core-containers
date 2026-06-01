@@ -225,18 +225,21 @@ shared with the trust-install landing page at `https://<host>/ca/`.)
 Plain HTTP requests to the same path are redirected to HTTPS (308). The
 sidecar that serves the file returns it with:
 
-| Header                | Value                                  |
-|-----------------------|----------------------------------------|
-| `Content-Type`        | `application/x-x509-ca-cert`           |
-| `Content-Disposition` | `attachment; filename="halos-ca.crt"`  |
+| Header                | Value                                       |
+|-----------------------|---------------------------------------------|
+| `Content-Type`        | `application/x-x509-ca-cert`                |
+| `Content-Disposition` | `attachment; filename="halos-ca-<host>.crt"`|
 
 `attachment` is the load-bearing piece: it causes browsers to open the
-OS-level certificate install dialog instead of rendering the PEM as plain
-text. The server always sends the static `filename="halos-ca.crt"`; the landing
-page then rewrites the *saved* name to a device-specific `halos-ca-<hostname>.crt`
-client-side (via the download link's `download` attribute, from
-`window.location.hostname`), so several devices' certs are distinguishable in a
-Downloads folder. The URL path itself never changes.
+OS-level certificate install dialog instead of rendering the PEM as plain text.
+
+The saved filename is device-specific (`halos-ca-<host>.crt`) so several
+devices' certs are distinguishable in a Downloads folder. It is built **in the
+CGI** from the request `Host` header (port stripped, sanitized to
+`[A-Za-z0-9._-]`) — *not* client-side: a server `Content-Disposition` filename
+overrides an HTML `download` attribute, so a page-set name would never take
+effect. Accessed by raw IP, `<host>` is that IP. The URL path itself never
+changes.
 
 **The sidecar is `busybox httpd` + small CGI scripts** (not nginx): serving the
 `.crt` or `.mobileconfig` records first download by flipping the adoption
