@@ -20,6 +20,8 @@
 #                                              copy active CA into a public-bindmount target
 #   - halos_ca_publish_mobileconfig <src_crt> <public_dir> <display_host>
 #                                              generate an Apple .mobileconfig carrying the CA
+#   - halos_ca_publish_system_trust <src_crt> <trust_dir> [update_cmd]
+#                                              install active CA into host trust store + rebuild
 #
 # Generated certs carry the extensions browsers + OS trust stores require:
 #   CA   — basicConstraints CA:TRUE (so importing as trust anchor actually works),
@@ -688,6 +690,52 @@ halos_cockpit_install_leaf() {
     fi
 }
 
+# _halos_ca_atomic_install <src_crt> <dest_file>
+# Stage <src_crt> beside <dest_file>, verify it parses as X.509, chmod 0644,
+# then atomically mv it into place. The parent dir of <dest_file> must already
+# exist — callers own directory creation and mode. Shared by the public-CA and
+# system-trust publishers.
+#
+# Staging uses a PID-suffixed sibling so concurrent callers don't collide; the
+# rm before cp keeps cp from following a pre-existing symlink at the stage path.
+# The X.509 parse check catches truncation, EIO mid-cp, and a src that drifted
+# to a non-cert. Refuses to install over a directory (plain mv would move INTO
+# it).
+#
+# Failure semantics: on any failure removes the .new sibling, leaves any
+# pre-existing <dest_file> untouched, prints a diagnostic, returns 1.
+_halos_ca_atomic_install() {
+    local src_crt="$1" dest_file="$2"
+    local dest_new="${dest_file}.new.$$"
+    rm -f "$dest_new"
+
+    if ! cp "$src_crt" "$dest_new"; then
+        rm -f "$dest_new"
+        echo "_halos_ca_atomic_install: failed to cp $src_crt to $dest_new" >&2
+        return 1
+    fi
+    if ! openssl x509 -in "$dest_new" -noout 2>/dev/null; then
+        rm -f "$dest_new"
+        echo "_halos_ca_atomic_install: copied file at $dest_new does not parse as an X.509 certificate" >&2
+        return 1
+    fi
+    if ! chmod 0644 "$dest_new"; then
+        rm -f "$dest_new"
+        echo "_halos_ca_atomic_install: chmod 0644 failed on $dest_new" >&2
+        return 1
+    fi
+    if [ -d "$dest_file" ]; then
+        rm -f "$dest_new"
+        echo "_halos_ca_atomic_install: refusing to install over directory at $dest_file" >&2
+        return 1
+    fi
+    if ! mv "$dest_new" "$dest_file"; then
+        rm -f "$dest_new"
+        echo "_halos_ca_atomic_install: failed to mv $dest_new to $dest_file; previous copy (if any) is preserved" >&2
+        return 1
+    fi
+}
+
 # halos_ca_publish_public <src_crt> <public_dir>
 # Atomically refresh a world-readable copy of <src_crt> at
 # <public_dir>/halos-ca.crt, mode 0644. Used by prestart to publish the active
@@ -730,43 +778,69 @@ halos_ca_publish_public() {
     # who narrowed it (e.g., debugging) doesn't break the bind-mount.
     chmod 0755 "$public_dir" 2>/dev/null || true
 
-    local public_file="${public_dir}/halos-ca.crt"
-    # PID-suffixed stage filename so concurrent prestart invocations don't
-    # collide on the same staging path. The mv into public_file is still
-    # atomic per caller.
-    local public_new="${public_file}.new.$$"
-    # rm before cp so `>` inside cp doesn't follow a pre-existing symlink at
-    # the stage path. (cp itself doesn't follow target symlinks by default
-    # for overwrite, but the per-pid name minimizes the surface anyway.)
-    rm -f "$public_new"
+    _halos_ca_atomic_install "$src_crt" "${public_dir}/halos-ca.crt"
+}
 
-    if ! cp "$src_crt" "$public_new"; then
-        rm -f "$public_new"
-        echo "halos_ca_publish_public: failed to cp $src_crt to $public_new" >&2
+# halos_ca_publish_system_trust <src_crt> <trust_dir> [update_cmd]
+# Install <src_crt> into the host CA trust store at <trust_dir>/halos-ca.crt
+# (mode 0644) and run <update_cmd> (default update-ca-certificates) so the
+# device's own desktop browser and CLI tools validate its HTTPS endpoints with
+# no operator action.
+#
+# Idempotent by design: when the installed copy already matches <src_crt>
+# byte-for-byte, the file is left untouched and <update_cmd> is NOT run.
+# halos-manage-certs re-fires on every boot and on the 24h renewal timer;
+# rebuilding the system bundle each time would be pure churn. Only a CA
+# rotation (content change) re-triggers the rebuild.
+#
+# Failure semantics: a stage/cp/parse/mv failure leaves the pre-existing trust
+# copy (if any) untouched and removes the .new sibling. An update_cmd failure
+# happens after the new cert is installed, so the helper removes that file too —
+# leaving the next run a clean mismatch to retry, rather than a file that would
+# make the cmp short-circuit skip the rebuild forever. All failures return
+# non-zero.
+#
+# Return codes:
+#   0 — success (installed + rebuilt, or already current)
+#   1 — runtime failure (missing source, write/chmod/mv error, parse fail,
+#       update_cmd failure)
+#   2 — caller bug (missing args)
+halos_ca_publish_system_trust() {
+    local src_crt="$1" trust_dir="$2" update_cmd="${3:-update-ca-certificates}"
+    if [ -z "$src_crt" ] || [ -z "$trust_dir" ]; then
+        echo "halos_ca_publish_system_trust: <src_crt> <trust_dir> both required" >&2
+        return 2
+    fi
+    if [ ! -f "$src_crt" ]; then
+        echo "halos_ca_publish_system_trust: source cert missing: $src_crt" >&2
         return 1
     fi
-    # Verify the copy parses as an X.509 cert. Catches truncation, EIO mid-
-    # cp, and the case where src_crt drifted to something that isn't a cert.
-    if ! openssl x509 -in "$public_new" -noout 2>/dev/null; then
-        rm -f "$public_new"
-        echo "halos_ca_publish_public: copied file at $public_new does not parse as an X.509 certificate" >&2
+
+    local trust_file="${trust_dir}/halos-ca.crt"
+    # Already current: skip the costly bundle rebuild. This is the common path
+    # on every non-rotation run.
+    if [ -f "$trust_file" ] && cmp -s "$src_crt" "$trust_file"; then
+        return 0
+    fi
+
+    if ! mkdir -p "$trust_dir"; then
+        echo "halos_ca_publish_system_trust: failed to mkdir $trust_dir" >&2
         return 1
     fi
-    if ! chmod 0644 "$public_new"; then
-        rm -f "$public_new"
-        echo "halos_ca_publish_public: chmod 0644 failed on $public_new" >&2
+
+    if ! _halos_ca_atomic_install "$src_crt" "$trust_file"; then
         return 1
     fi
-    # Refuse to install over a pre-existing directory at public_file (plain
-    # mv would silently move INTO the directory).
-    if [ -d "$public_file" ]; then
-        rm -f "$public_new"
-        echo "halos_ca_publish_public: refusing to install over directory at $public_file" >&2
-        return 1
-    fi
-    if ! mv "$public_new" "$public_file"; then
-        rm -f "$public_new"
-        echo "halos_ca_publish_public: failed to mv $public_new to $public_file; previous copy (if any) is preserved" >&2
+
+    # stdout is the progress ticker (noise); let stderr through so the journal
+    # carries the actual diagnostic when the rebuild fails.
+    if ! "$update_cmd" >/dev/null; then
+        # The new cert is already installed (mv above), but the bundle wasn't
+        # rebuilt. Remove the staged file so the next run sees a mismatch and
+        # retries — otherwise the cmp short-circuit would skip the rebuild
+        # forever and the device would never trust its own CA.
+        rm -f "$trust_file"
+        echo "halos_ca_publish_system_trust: $update_cmd failed; removed the trust file so the next run retries the rebuild" >&2
         return 1
     fi
 }

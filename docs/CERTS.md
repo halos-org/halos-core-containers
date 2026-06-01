@@ -212,6 +212,21 @@ The refresh only fires when the CA's embedded name differs from the current
 hostname: resetting to `pending` on a CA that already names the current host is
 a no-op (no regeneration, no re-trust cost).
 
+## Host self-trust
+
+So a device that runs its own desktop reaches its dashboard without cert
+warnings, `halos-manage-certs` also installs the active CA into the host trust
+store at `/usr/local/share/ca-certificates/halos-ca.crt` and runs
+`update-ca-certificates` (helper `halos_ca_publish_system_trust` in
+`lib-ca.sh`). This makes the device's own browser and CLI tools validate its
+HTTPS endpoints with no operator action.
+
+The bundle rebuild is skipped when the store already holds the active CA, so
+the 24 h renewal timer doesn't churn it — only a CA rotation re-triggers
+`update-ca-certificates`. Aux-failure semantics: a failure logs `WARNING` and
+never blocks cert management. The step runs on every variant; on a headless
+device it is harmless (the device simply trusts its own CA for local tooling).
+
 ## CA download endpoint
 
 The active CA is published at:
