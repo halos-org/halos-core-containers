@@ -1026,6 +1026,23 @@ test_ca_rotation_reinstalls_system_trust() {
     fi
 }
 
+test_system_trust_update_failure_is_nonfatal() {
+    # An update-ca-certificates failure is auxiliary: the script must still exit
+    # 0, still produce the leaf, log a WARNING, and remove the trust file so the
+    # next run retries (self-heal — see the helper's failed-update path).
+    local d; d=$(new_scratch systrust_update_fail)
+    printf '#!/bin/sh\nexit 1\n' > "$d/fake-update-ca"
+    chmod +x "$d/fake-update-ca"
+    local out rc
+    out=$(run_script "$d" 2>&1); rc=$?
+    assert_eq "$rc" "0" "aux update-ca failure must not abort the script" || return 1
+    assert_file "$(_cert_file "$d")" "leaf must still be produced when system-trust update fails" || return 1
+    assert_no_file "$(_system_trust_ca "$d")" "trust file must be removed on update failure (self-heal)" || return 1
+    if ! printf '%s' "$out" | grep -q "WARNING.*trust store"; then
+        echo "expected WARNING about the host trust store; got: $out"; return 1
+    fi
+}
+
 # ---------------------------------------------------------------------------
 
 run_test test_first_boot_bootstrap_creates_all_artifacts
@@ -1066,6 +1083,7 @@ run_test test_custom_ca_cn_untouched
 run_test test_first_boot_installs_ca_in_system_trust
 run_test test_idempotent_rerun_skips_system_trust_update
 run_test test_ca_rotation_reinstalls_system_trust
+run_test test_system_trust_update_failure_is_nonfatal
 
 echo
 echo "Passed: $PASSES, Failed: $FAILS"

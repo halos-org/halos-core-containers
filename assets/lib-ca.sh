@@ -786,8 +786,12 @@ halos_ca_publish_public() {
 # rebuilding the system bundle each time would be pure churn. Only a CA
 # rotation (content change) re-triggers the rebuild.
 #
-# Failure semantics: on any failure leaves the pre-existing trust copy (if any)
-# untouched, removes the .new sibling, returns non-zero.
+# Failure semantics: a stage/cp/parse/mv failure leaves the pre-existing trust
+# copy (if any) untouched and removes the .new sibling. An update_cmd failure
+# happens after the new cert is installed, so the helper removes that file too —
+# leaving the next run a clean mismatch to retry, rather than a file that would
+# make the cmp short-circuit skip the rebuild forever. All failures return
+# non-zero.
 #
 # Return codes:
 #   0 — success (installed + rebuilt, or already current)
@@ -846,8 +850,15 @@ halos_ca_publish_system_trust() {
         return 1
     fi
 
-    if ! "$update_cmd" >/dev/null 2>&1; then
-        echo "halos_ca_publish_system_trust: $update_cmd failed; trust file installed but the system bundle was not rebuilt" >&2
+    # stdout is the progress ticker (noise); let stderr through so the journal
+    # carries the actual diagnostic when the rebuild fails.
+    if ! "$update_cmd" >/dev/null; then
+        # The new cert is already installed (mv above), but the bundle wasn't
+        # rebuilt. Remove the staged file so the next run sees a mismatch and
+        # retries — otherwise the cmp short-circuit would skip the rebuild
+        # forever and the device would never trust its own CA.
+        rm -f "$trust_file"
+        echo "halos_ca_publish_system_trust: $update_cmd failed; removed the trust file so the next run retries the rebuild" >&2
         return 1
     fi
 }

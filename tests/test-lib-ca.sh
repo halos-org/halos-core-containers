@@ -1316,6 +1316,27 @@ test_publish_system_trust_no_new_debris_on_success() {
     ! ls "$trust"/halos-ca.crt.new.* >/dev/null 2>&1 || { echo ".new.<pid> sibling should not remain after success"; return 1; }
 }
 
+test_publish_system_trust_failed_update_self_heals() {
+    # When update_cmd fails AFTER the cert is installed, the helper must remove
+    # the trust file — otherwise the next run's cmp short-circuit would skip the
+    # rebuild forever and the device would never trust its own CA.
+    local d="$TMPDIR_ROOT/case_systrust_selfheal"
+    local trust="$d/trust"
+    mkdir -p "$d"
+    halos_ca_ensure_auto "$d" || return 1
+    local bad="$d/fail-update"
+    printf '#!/bin/sh\nexit 1\n' > "$bad"; chmod +x "$bad"
+    halos_ca_publish_system_trust "$d/ca.crt" "$trust" "$bad" >/dev/null 2>&1
+    local rc=$?
+    assert_eq "$rc" "1" "update failure must return 1" || return 1
+    [ ! -f "$trust/halos-ca.crt" ] || { echo "trust file must be removed when update fails, so the next run retries"; return 1; }
+    # Retry with a succeeding update_cmd: must reinstall AND rebuild.
+    local good; good=$(_make_update_stub "$d")
+    halos_ca_publish_system_trust "$d/ca.crt" "$trust" "$good" || return 1
+    [ -f "$trust/halos-ca.crt" ] || { echo "trust file must be reinstalled on retry"; return 1; }
+    [ -f "$d/update-ran" ] || { echo "update must run on the retry, not be skipped"; return 1; }
+}
+
 # Decode the base64 <data> payload from a .mobileconfig into a DER file.
 # Pulls the single-line base64 between the <data> tags (our generator emits it
 # flattened), strips whitespace, and base64-decodes. Echoes the DER path.
@@ -1923,6 +1944,7 @@ run_test test_publish_system_trust_rejects_non_cert_source
 run_test test_publish_system_trust_preserves_existing_on_failure
 run_test test_publish_system_trust_refuses_directory_at_output
 run_test test_publish_system_trust_no_new_debris_on_success
+run_test test_publish_system_trust_failed_update_self_heals
 run_test test_publish_mobileconfig_happy_path
 run_test test_publish_mobileconfig_der_round_trips
 run_test test_publish_mobileconfig_embeds_display_host
