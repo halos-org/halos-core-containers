@@ -278,9 +278,11 @@ Windows. Client-side User-Agent detection auto-expands the section matching
 the visitor's OS; with JavaScript off, the sections stay collapsed but remain
 accessible — clicking any heading expands it. The page
 states up front that installing the certificate and trusting it are separate
-steps on every platform — Apple's *Certificate Trust Settings* toggle,
-macOS *Always Trust*, Android's browser-only trust, and the Firefox NSS
-store all need an explicit trust action beyond the install.
+steps — true for iOS's *Certificate Trust Settings* toggle, Android's
+browser-only trust, and the Firefox NSS store, each of which needs an explicit
+trust action beyond the install. macOS is the exception: a single
+`security add-trusted-cert -d -r trustRoot` imports the `.crt` into the System
+keychain and marks it a trusted root in one step.
 
 The page's generic download button points at `/ca/halos-ca.crt`. The iOS/iPadOS
 section leads with the Apple configuration profile below; macOS, Android, Linux,
@@ -291,8 +293,9 @@ separately and will slot into the Linux section as it lands.
 delivered by a manually-installed configuration profile is *not* trusted for SSL
 automatically, the cert does not appear in Keychain Access, and macOS has no
 iOS-style *Certificate Trust Settings* toggle — so there is no way to grant the
-profile-delivered root SSL trust. The raw `.crt` installed into the System
-keychain, where the operator sets *Always Trust*, is the only working macOS path.
+profile-delivered root SSL trust. The raw `.crt` added to the System keychain
+as a trusted root (`security add-trusted-cert -d -r trustRoot`) is the only
+working macOS path.
 iOS is different: it exposes *Settings → General → About → Certificate Trust
 Settings*, and the profile avoids the Files-app routing that breaks the raw-`.crt`
 download there (see issue #169). References:
@@ -324,10 +327,10 @@ Apple Developer ID we don't own) — installs fine with a cosmetic "Not Verified
 notice. Profile identifiers and UUIDs are fixed constants, so a CA rotation
 replaces the existing profile instead of stacking a duplicate.
 
-Install is **not** trust: macOS Sequoia / iOS 17-18 still require a separate
-trust action after install (Keychain Access "Always Trust" on macOS, *Settings →
-General → About → Certificate Trust Settings* on iOS). The landing page is
-explicit about this.
+Install is **not** trust: on iOS 17-18 the profile still requires the separate
+*Settings → General → About → Certificate Trust Settings* toggle after install.
+The landing page is explicit about this. (macOS doesn't use the profile — it
+takes the raw-`.crt` + `security add-trusted-cert` path above.)
 
 A dashboard tile (`assets/ca-download-tile.toml`, installed to
 `/etc/halos/webapps.d/ca-download.toml`) surfaces this page on the Homarr

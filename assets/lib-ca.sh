@@ -996,8 +996,9 @@ _halos_uuid_from_hex() {
 #
 # The profile is UNSIGNED: signing needs an Apple Developer ID we do not own.
 # Unsigned profiles install fine with a cosmetic "Not Signed" warning. Install
-# is NOT trust: macOS Sequoia / iOS 17-18 still require a separate trust action
-# (Keychain Access "Always Trust" / Settings -> Certificate Trust Settings).
+# is NOT trust: on iOS 17-18 the profile still needs the separate trust toggle
+# (Settings -> General -> About -> Certificate Trust Settings). The profile is
+# iOS-only, so the old macOS Keychain "Always Trust" step does not apply here.
 #
 # The plist template lives inline (heredoc) rather than as a separate asset
 # file: lib-ca.sh installs to /usr/lib/<pkg>/ while assets/ trees install into
