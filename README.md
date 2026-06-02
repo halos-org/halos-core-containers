@@ -134,7 +134,7 @@ CI/CD builds Debian packages from this repository:
 - `halos-authelia-container` - SSO identity provider
 - `halos-homarr-container` - Dashboard landing page
 
-All packages are published to apt.hatlabs.fi.
+All packages are published to apt.halos.fi.
 
 ## Agentic Coding Setup (Claude Code, GitHub Copilot, etc.)
 
@@ -202,7 +202,7 @@ ls build/*.deb
 - [halos-marine-containers](https://github.com/halos-org/halos-marine-containers) - Marine container store
 - [cockpit-apt](https://github.com/halos-org/cockpit-apt) - APT package manager with store filtering
 - [container-packaging-tools](https://github.com/halos-org/container-packaging-tools) - Package generation tooling
-- [apt.hatlabs.fi](https://github.com/hatlabs/apt.hatlabs.fi) - APT repository infrastructure
+- [apt.halos.fi](https://github.com/halos-org/apt.halos.fi) - APT repository infrastructure
 
 ## License
 
