@@ -23,3 +23,5 @@ external = true
 priority = 70
 width = 1
 height = 1
+x_offset = 11
+y_offset = 1
