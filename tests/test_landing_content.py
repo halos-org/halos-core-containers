@@ -48,7 +48,7 @@ def test_macos_uses_raw_crt_not_profile():
     # must NOT offer the .mobileconfig.
     macos = _section("macos")
     assert 'href="/ca/halos-ca.crt"' in macos
-    assert "Always Trust" in macos
+    assert "add-trusted-cert" in macos
     assert "halos-ca.mobileconfig" not in macos
 
 
@@ -67,7 +67,7 @@ def test_ios_advanced_names_files_app_fallback():
 @pytest.mark.parametrize(
     "marker",
     [
-        "Always Trust",  # macOS Keychain trust step
+        "add-trusted-cert",  # macOS Terminal trust command
         "Certificate Trust Settings",  # iOS trust toggle
         "Android trusts user-installed CAs in browsers only",  # Android-unique
         "update-ca-certificates",  # Linux system store
