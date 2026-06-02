@@ -48,11 +48,11 @@ ${CHANGELOG}
 To install this pre-release:
 
 \`\`\`bash
-# Add Hat Labs repository (if not already added)
-curl -fsSL https://apt.hatlabs.fi/hat-labs-apt-key.asc | sudo gpg --dearmor -o /usr/share/keyrings/hatlabs-apt-key.gpg
+# Add HaLOS repository (if not already added)
+curl -fsSL https://apt.halos.fi/halos-apt-key.asc | sudo gpg --dearmor -o /usr/share/keyrings/halos.gpg
 
 # Add unstable channel
-echo "deb [signed-by=/usr/share/keyrings/hatlabs-apt-key.gpg] https://apt.hatlabs.fi unstable main" | sudo tee /etc/apt/sources.list.d/hatlabs-unstable.list
+echo "deb [signed-by=/usr/share/keyrings/halos.gpg] https://apt.halos.fi trixie-unstable main" | sudo tee /etc/apt/sources.list.d/halos.list
 
 # Update and install
 sudo apt update
@@ -80,7 +80,7 @@ ${CHANGELOG}
 
 ### Installation
 
-Built Debian packages are attached to this release and available from [apt.hatlabs.fi](https://github.com/hatlabs/apt.hatlabs.fi):
+Built Debian packages are attached to this release and available from [apt.halos.fi](https://github.com/halos-org/apt.halos.fi):
 
 \`\`\`bash
 sudo apt update
@@ -113,7 +113,7 @@ ${CHANGELOG}
 
 ### Installation
 
-Built Debian packages are attached to this release and available from [apt.hatlabs.fi](https://github.com/hatlabs/apt.hatlabs.fi):
+Built Debian packages are attached to this release and available from [apt.halos.fi](https://github.com/halos-org/apt.halos.fi):
 
 \`\`\`bash
 sudo apt update
