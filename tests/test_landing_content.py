@@ -52,6 +52,14 @@ def test_macos_uses_raw_crt_not_profile():
     assert "halos-ca.mobileconfig" not in macos
 
 
+def test_copy_button_has_insecure_context_fallback():
+    # The page is first reached over a cert-warning click-through, which may
+    # not be a secure context, so the copy button must not rely on the
+    # Clipboard API alone — execCommand is the fallback that keeps it working.
+    assert "navigator.clipboard" in HTML
+    assert 'execCommand("copy")' in HTML
+
+
 def test_ios_bare_crt_demoted_to_advanced():
     # The corrected raw-.crt fallback survives on iOS, inside an Advanced
     # disclosure rather than as the primary path.
