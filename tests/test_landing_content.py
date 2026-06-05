@@ -44,10 +44,10 @@ def test_ios_leads_with_mobileconfig():
 
 def test_macos_uses_raw_crt_not_profile():
     # A profile-delivered root is not added to Keychain Access on macOS and has
-    # no SSL-trust UI there, so macOS must use the raw .crt + Keychain path and
-    # must NOT offer the .mobileconfig.
+    # no SSL-trust UI there, so macOS must use the raw .crt + security command
+    # and must NOT offer the .mobileconfig.
     macos = _section("macos")
-    assert 'href="/ca/halos-ca.crt"' in macos
+    assert "/ca/halos-ca.crt" in macos
     assert "add-trusted-cert" in macos
     assert "halos-ca.mobileconfig" not in macos
 

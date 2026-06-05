@@ -130,15 +130,11 @@
 
       <details id="macos">
         <summary>macOS</summary>
-        <ol>
-          <li>Download <a href="/ca/halos-ca.crt" download="halos-ca.crt"><code data-cert-filename>halos-ca.crt</code></a> (the button at the top does the same). It lands in <code>~/Downloads</code> by default.</li>
-          <li>Open the <strong>Terminal</strong> app — press <kbd>⌘</kbd>+<kbd>Space</kbd>, type <em>Terminal</em>, and press <kbd>Return</kbd> — then type (or paste) this command and press <kbd>Return</kbd>:
-            <pre>sudo security add-trusted-cert -d -r trustRoot \
-  -k /Library/Keychains/System.keychain ~/Downloads/<span data-cert-filename>halos-ca.crt</span></pre>
-            Enter your password when prompted. <span class="caveat"><code>-d</code> installs into the admin/System domain; <code>-r trustRoot</code> trusts it as a root CA. This one command both imports and trusts the certificate, so there is no separate Keychain Access step.</span>
-          </li>
-          <li>Quit and reopen your browser.</li>
-        </ol>
+        <p>Open the <strong>Terminal</strong> app — press <kbd>⌘</kbd>+<kbd>Space</kbd>, type <em>Terminal</em>, press <kbd>Return</kbd> — then paste this and press <kbd>Return</kbd>:</p>
+        <pre>curl -k <span data-cert-origin>https://this-device</span>/ca/halos-ca.crt -o /tmp/halos-ca.crt
+sudo security delete-certificate -c "$(openssl x509 -in /tmp/halos-ca.crt -noout -subject -nameopt RFC2253 | sed -n 's/.*CN=\([^,]*\).*/\1/p')" /Library/Keychains/System.keychain 2&gt;/dev/null
+sudo security add-trusted-cert -d -r trustRoot -k /Library/Keychains/System.keychain /tmp/halos-ca.crt</pre>
+        <p class="caveat">Enter your password when prompted, then quit and reopen your browser. This downloads the certificate, removes any earlier one from this device, and trusts the new one as a root CA.</p>
       </details>
 
       <details id="ios">
@@ -238,6 +234,7 @@ sudo update-ca-certificates</pre>
           var els = document.querySelectorAll(sel);
           for (var i = 0; i < els.length; i++) els[i].textContent = text;
         }
+        fill("[data-cert-origin]", location.origin);
         fetch("/ca/halos-ca.crt", { method: "HEAD" })
           .then(function (r) {
             var cd = r.headers.get("Content-Disposition") || "";
