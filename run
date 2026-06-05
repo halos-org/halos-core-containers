@@ -188,7 +188,7 @@ function bumpversion {
     return 1
   fi
 
-  if ! command -v bumpversion &> /dev/null; then
+  if ! type -P bumpversion &> /dev/null; then
     echo "bumpversion not found. Install with:"
     echo "  uv tool install bump2version"
     return 1

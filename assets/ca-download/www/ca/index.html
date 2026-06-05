@@ -259,12 +259,12 @@ sudo update-ca-certificates</pre>
         var ICON =
           '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2"></rect><path d="M5 15V5a2 2 0 0 1 2-2h10"></path></svg>';
         function flash(btn, label) {
-          var span = btn.lastChild;
-          var prev = span.textContent;
+          var span = btn.querySelector("span");
           span.textContent = label;
           btn.classList.add("copied");
-          setTimeout(function () {
-            span.textContent = prev;
+          clearTimeout(btn._flash);
+          btn._flash = setTimeout(function () {
+            span.textContent = "Copy";
             btn.classList.remove("copied");
           }, 1500);
         }
