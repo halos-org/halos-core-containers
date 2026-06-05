@@ -173,6 +173,32 @@ function status {
 }
 
 ################################################################################
+# Version Management
+
+function bumpversion {
+  #@ Bump the release-cycle version in VERSION (usage: bumpversion patch|minor|major)
+  #@ Category: Version
+  local bump_type="${1:-}"
+
+  if [[ ! "$bump_type" =~ ^(patch|minor|major)$ ]]; then
+    echo "Usage: ./run bumpversion [patch|minor|major]"
+    echo ""
+    echo "Bumps the release-cycle version in VERSION via bump2version."
+    echo "Run only on the PR that opens a new release cycle (see AGENTS.md)."
+    return 1
+  fi
+
+  if ! type -P bumpversion &> /dev/null; then
+    echo "bumpversion not found. Install with:"
+    echo "  uv tool install bump2version"
+    return 1
+  fi
+
+  command bumpversion "$bump_type"
+  echo "VERSION bumped to $(cat VERSION)"
+}
+
+################################################################################
 # Help System
 
 function help {

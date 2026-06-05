@@ -94,6 +94,27 @@
       }
       code { padding: 0.1rem 0.35rem; }
       pre { padding: 0.7rem 0.9rem; overflow-x: auto; margin: 0.4rem 0; }
+      .snippet { position: relative; margin: 0.4rem 0; }
+      .snippet > pre { margin: 0; padding-right: 3.2rem; }
+      .copy {
+        position: absolute;
+        top: 0.4rem;
+        right: 0.4rem;
+        display: inline-flex;
+        align-items: center;
+        gap: 0.3rem;
+        background: var(--card);
+        color: var(--muted);
+        border: 1px solid var(--border);
+        border-radius: 0.3rem;
+        padding: 0.25rem 0.45rem;
+        font: 600 0.78rem/1 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+        cursor: pointer;
+      }
+      .copy:hover { color: var(--fg); border-color: var(--accent); }
+      .copy:focus-visible { outline: 2px solid var(--warn-border); outline-offset: 1px; }
+      .copy svg { width: 0.95em; height: 0.95em; }
+      .copy.copied { color: var(--accent); border-color: var(--accent); }
       .caveat { color: var(--muted); font-size: 0.92rem; }
       footer { margin-top: 2.5rem; color: var(--muted); font-size: 0.88rem; }
     </style>
@@ -130,15 +151,11 @@
 
       <details id="macos">
         <summary>macOS</summary>
-        <ol>
-          <li>Download <a href="/ca/halos-ca.crt" download="halos-ca.crt"><code data-cert-filename>halos-ca.crt</code></a> (the button at the top does the same). It lands in <code>~/Downloads</code> by default.</li>
-          <li>Open the <strong>Terminal</strong> app — press <kbd>⌘</kbd>+<kbd>Space</kbd>, type <em>Terminal</em>, and press <kbd>Return</kbd> — then type (or paste) this command and press <kbd>Return</kbd>:
-            <pre>sudo security add-trusted-cert -d -r trustRoot \
-  -k /Library/Keychains/System.keychain ~/Downloads/<span data-cert-filename>halos-ca.crt</span></pre>
-            Enter your password when prompted. <span class="caveat"><code>-d</code> installs into the admin/System domain; <code>-r trustRoot</code> trusts it as a root CA. This one command both imports and trusts the certificate, so there is no separate Keychain Access step.</span>
-          </li>
-          <li>Quit and reopen your browser.</li>
-        </ol>
+        <p>Open the <strong>Terminal</strong> app — press <kbd>⌘</kbd>+<kbd>Space</kbd>, type <em>Terminal</em>, press <kbd>Return</kbd> — then paste this and press <kbd>Return</kbd>:</p>
+        <pre>curl -k <span data-cert-origin>https://this-device</span>/ca/halos-ca.crt -o /tmp/halos-ca.crt
+sudo security delete-certificate -c "$(openssl x509 -in /tmp/halos-ca.crt -noout -subject -nameopt RFC2253 | sed -n 's/.*CN=\([^,]*\).*/\1/p')" /Library/Keychains/System.keychain 2&gt;/dev/null
+sudo security add-trusted-cert -d -r trustRoot -k /Library/Keychains/System.keychain /tmp/halos-ca.crt</pre>
+        <p class="caveat">Enter your password when prompted, then quit and reopen your browser. This downloads the certificate, removes any earlier one from this device, and trusts the new one as a root CA.</p>
       </details>
 
       <details id="ios">
@@ -175,16 +192,11 @@
 
       <details id="linux">
         <summary>Linux (Debian / Ubuntu)</summary>
-        <p>System trust store (Chromium, Chrome, curl, most apps):</p>
-        <ol>
-          <li>Download <code data-cert-filename>halos-ca.crt</code>.</li>
-          <li>Install it:
-            <pre>sudo cp <span data-cert-filename>halos-ca.crt</span> /usr/local/share/ca-certificates/<span data-cert-filename>halos-ca.crt</span>
+        <p>System trust store (Chromium, Chrome, curl, most apps) — paste into a terminal:</p>
+        <pre>sudo curl -k <span data-cert-origin>https://this-device</span>/ca/halos-ca.crt -o /usr/local/share/ca-certificates/<span data-cert-filename>halos-ca.crt</span>
 sudo update-ca-certificates</pre>
-          </li>
-          <li>Restart Chromium or Chrome.</li>
-        </ol>
-        <p class="caveat">Firefox keeps its own certificate store: <strong>Settings → Privacy &amp; Security → Certificates → View Certificates → Authorities → Import</strong>, select <code data-cert-filename>halos-ca.crt</code>, and trust it for websites.</p>
+        <p>Then restart Chromium or Chrome.</p>
+        <p class="caveat">Firefox keeps its own certificate store: download the certificate with the button at the top, then <strong>Settings → Privacy &amp; Security → Certificates → View Certificates → Authorities → Import</strong>, select <code data-cert-filename>halos-ca.crt</code>, and trust it for websites.</p>
       </details>
 
       <details id="windows">
@@ -238,6 +250,73 @@ sudo update-ca-certificates</pre>
           var els = document.querySelectorAll(sel);
           for (var i = 0; i < els.length; i++) els[i].textContent = text;
         }
+        fill("[data-cert-origin]", location.origin);
+
+        // Copy buttons are injected, not in the static HTML, so a no-JS reader
+        // never sees a dead control. Clipboard access needs a secure context,
+        // which a cert-warning click-through may not grant on the first visit,
+        // so fall back to execCommand and finally to selecting the text.
+        var ICON =
+          '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2"></rect><path d="M5 15V5a2 2 0 0 1 2-2h10"></path></svg>';
+        function flash(btn, label) {
+          var span = btn.querySelector("span");
+          span.textContent = label;
+          btn.classList.add("copied");
+          clearTimeout(btn._flash);
+          btn._flash = setTimeout(function () {
+            span.textContent = "Copy";
+            btn.classList.remove("copied");
+          }, 1500);
+        }
+        function selectPre(pre) {
+          var range = document.createRange();
+          range.selectNodeContents(pre);
+          var sel = window.getSelection();
+          sel.removeAllRanges();
+          sel.addRange(range);
+        }
+        function legacyCopy(pre, text, btn) {
+          var ta = document.createElement("textarea");
+          ta.value = text;
+          ta.setAttribute("readonly", "");
+          ta.style.position = "absolute";
+          ta.style.left = "-9999px";
+          document.body.appendChild(ta);
+          ta.select();
+          var ok = false;
+          try { ok = document.execCommand("copy"); } catch (e) {}
+          document.body.removeChild(ta);
+          if (ok) { flash(btn, "Copied"); }
+          else { selectPre(pre); flash(btn, "Press ⌘C"); }
+        }
+        function copyPre(pre, btn) {
+          var text = pre.textContent;
+          if (navigator.clipboard && navigator.clipboard.writeText) {
+            navigator.clipboard.writeText(text).then(
+              function () { flash(btn, "Copied"); },
+              function () { legacyCopy(pre, text, btn); }
+            );
+          } else {
+            legacyCopy(pre, text, btn);
+          }
+        }
+        var pres = document.querySelectorAll("pre");
+        for (var p = 0; p < pres.length; p++) {
+          (function (pre) {
+            var wrap = document.createElement("div");
+            wrap.className = "snippet";
+            pre.parentNode.insertBefore(wrap, pre);
+            wrap.appendChild(pre);
+            var btn = document.createElement("button");
+            btn.type = "button";
+            btn.className = "copy";
+            btn.setAttribute("aria-label", "Copy to clipboard");
+            btn.innerHTML = ICON + "<span aria-live=\"polite\">Copy</span>";
+            btn.addEventListener("click", function () { copyPre(pre, btn); });
+            wrap.appendChild(btn);
+          })(pres[p]);
+        }
+
         fetch("/ca/halos-ca.crt", { method: "HEAD" })
           .then(function (r) {
             var cd = r.headers.get("Content-Disposition") || "";

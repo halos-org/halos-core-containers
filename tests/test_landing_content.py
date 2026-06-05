@@ -44,12 +44,33 @@ def test_ios_leads_with_mobileconfig():
 
 def test_macos_uses_raw_crt_not_profile():
     # A profile-delivered root is not added to Keychain Access on macOS and has
-    # no SSL-trust UI there, so macOS must use the raw .crt + Keychain path and
-    # must NOT offer the .mobileconfig.
+    # no SSL-trust UI there, so macOS must use the raw .crt + security command
+    # and must NOT offer the .mobileconfig.
     macos = _section("macos")
-    assert 'href="/ca/halos-ca.crt"' in macos
+    assert "/ca/halos-ca.crt" in macos
     assert "add-trusted-cert" in macos
+    # The stale System-keychain cert must be deleted before re-adding, and in
+    # that order — otherwise a reflash silently fails to update trust.
+    assert "delete-certificate" in macos
+    assert macos.index("delete-certificate") < macos.index("add-trusted-cert")
     assert "halos-ca.mobileconfig" not in macos
+
+
+def test_copy_button_has_insecure_context_fallback():
+    # The page is first reached over a cert-warning click-through, which may
+    # not be a secure context, so the copy button must not rely on the
+    # Clipboard API alone — execCommand is the fallback that keeps it working.
+    assert "navigator.clipboard" in HTML
+    assert "execCommand" in HTML
+
+
+def test_linux_folds_download_into_curl():
+    # The system-trust path is a single curl-to-install command, not the old
+    # download-then-cp; a regression to cp would silently reappear otherwise.
+    linux = _section("linux")
+    assert "curl" in linux
+    assert "update-ca-certificates" in linux
+    assert "cp " not in linux
 
 
 def test_ios_bare_crt_demoted_to_advanced():
@@ -111,8 +132,9 @@ def test_instruction_filenames_are_templated():
     # rewrite it to the device-specific name. The static text stays halos-ca.crt
     # as the no-JS fallback.
     assert "data-cert-filename" in HTML
-    # The Linux cp command references the file twice — both must be hooked, so
-    # a copy-pasted command names the file the user actually downloaded.
+    # Multiple visible references (the Linux install path, the per-OS file
+    # names) must all be hooked so a copy-pasted command names the file the
+    # user actually downloaded.
     assert HTML.count("data-cert-filename") >= 2
 
 
