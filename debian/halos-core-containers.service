@@ -1,7 +1,7 @@
 [Unit]
 Description=HaLOS Core Containers (Traefik, Authelia, Homarr)
-After=docker.service halos-manage-certs.service
-Requires=docker.service halos-manage-certs.service
+After=docker.service halos-manage-certs.service halos-resolve-domain.service
+Requires=docker.service halos-manage-certs.service halos-resolve-domain.service
 
 [Service]
 Type=simple
@@ -10,6 +10,10 @@ ExecStartPre=/var/lib/container-apps/halos-core-containers/prestart.sh
 EnvironmentFile=-/etc/container-apps/halos-core-containers/env.defaults
 EnvironmentFile=-/etc/container-apps/halos-core-containers/env
 EnvironmentFile=-/run/container-apps/halos-core-containers/runtime.env
+# HALOS_DOMAIN is published by halos-resolve-domain.service (ordered before
+# this unit). Listed last so it is authoritative over any stale HALOS_DOMAIN
+# a pre-upgrade runtime.env may still carry.
+EnvironmentFile=-/run/halos/domain.env
 ExecStart=docker compose up
 ExecStop=docker compose down
 Restart=on-failure

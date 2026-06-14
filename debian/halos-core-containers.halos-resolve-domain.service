@@ -1,0 +1,22 @@
+[Unit]
+Description=Resolve HaLOS canonical hostname and publish HALOS_DOMAIN
+Documentation=https://github.com/halos-org/halos-core-containers/blob/main/docs/HOSTNAMES.md
+After=local-fs.target
+Before=halos-core-containers.service
+
+[Service]
+# Type=oneshot WITHOUT RemainAfterExit so an explicit consumer (re)start
+# re-runs the resolver and republishes /run/halos/domain.env, picking up admin
+# edits to /etc/halos/hostnames.conf. A consumer's Requires= pulls in this
+# (inactive) oneshot when the consumer is started; the successful exit
+# satisfies Requires= even after the unit goes naturally inactive. (A systemd
+# Restart=on-failure auto-restart of the consumer does not re-pull Requires=
+# deps, so it does not re-run this — domain.env simply retains its last value.)
+# Same reasoning as halos-manage-certs.service.
+Type=oneshot
+ExecStart=/usr/lib/halos-core-containers/halos-resolve-domain
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=halos-core-containers.service

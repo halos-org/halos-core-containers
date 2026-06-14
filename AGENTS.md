@@ -99,10 +99,21 @@ hostname this device answers to (cert SANs, Authelia cookies, OIDC
 `redirect_uris`). User-facing reference: [docs/HOSTNAMES.md](docs/HOSTNAMES.md).
 
 The shared loader at `/usr/lib/halos-core-containers/lib-hostnames.sh` is
-sourced by `prestart.sh` and `reload-oidc-clients`; do not duplicate
-parsing logic — extend the loader instead. (`configure-container-routing`
-no longer needs hostname interpolation because all per-app routers are
-now path-only.)
+sourced by `prestart.sh`, `reload-oidc-clients`, and `halos-resolve-domain`;
+do not duplicate parsing logic — extend the loader instead.
+
+The **canonical hostname** (`HALOS_DOMAIN`, the OIDC issuer) is resolved once
+by `halos-resolve-domain.service` (a oneshot ordered before container-app
+services) and published to `/run/halos/domain.env`. Container-app units load
+it via `EnvironmentFile=-/run/halos/domain.env`; consumers (`prestart.sh`,
+`configure-container-routing`, app containers) read `HALOS_DOMAIN` from the
+environment rather than re-deriving it — one resolver, and no stale-
+`EnvironmentFile` feedback loop. `prestart.sh` still sources the loader for
+the **hostname list** (`HALOS_HOSTNAMES_DNS[]`, consumed by the Authelia
+per-hostname cookies block and OIDC `redirect_uris` expansion), which the
+canonical-only `domain.env` does not carry. (`configure-container-routing`
+uses `HALOS_DOMAIN` only for diagnostic logging — all per-app routers are
+path-only.)
 
 **Loader extension points.** When adding a new consumer of the parsed
 hostname list:

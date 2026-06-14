@@ -65,6 +65,13 @@ override_dh_auto_install:
 	install -D -m 755 assets/halos-manage-certs \
 		debian/$(PKG_NAME)/usr/lib/$(PKG_NAME)/halos-manage-certs
 
+	# Install the canonical-hostname resolver. Systemd-invoked helper
+	# (halos-resolve-domain.service oneshot) that publishes HALOS_DOMAIN to
+	# /run/halos/domain.env for every container-app unit to load — same
+	# placement rationale as halos-manage-certs (not a general /usr/bin tool).
+	install -D -m 755 assets/halos-resolve-domain \
+		debian/$(PKG_NAME)/usr/lib/$(PKG_NAME)/halos-resolve-domain
+
 	# Install hostnames.conf as a Debian conffile (admin-managed; preserved on upgrade).
 	# Mode 0644: the file lists hostnames the device answers to, all of which are
 	# also visible in mDNS announcements, TLS cert SANs, and the Authelia/OIDC
@@ -95,3 +102,4 @@ override_dh_auto_test:
 override_dh_installsystemd:
 	dh_installsystemd
 	dh_installsystemd --name=halos-manage-certs
+	dh_installsystemd --name=halos-resolve-domain
