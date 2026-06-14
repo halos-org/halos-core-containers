@@ -1,0 +1,35 @@
+#!/bin/bash
+# halos-resolve-domain — resolve the device's canonical hostname once and
+# publish it as HALOS_DOMAIN to a shared env file that every container-app
+# systemd unit loads via EnvironmentFile.
+#
+# Run as the oneshot halos-resolve-domain.service, ordered before container-app
+# services. It recomputes on every (re)start so an admin edit to
+# /etc/halos/hostnames.conf takes effect on the next service start — no per-app
+# resolution, and no stale-EnvironmentFile feedback loop (consumers never write
+# HALOS_DOMAIN back to a file they later re-read).
+set -e
+
+# Overridable for tests; defaults match production.
+: "${HALOS_DOMAIN_FILE:=/run/halos/domain.env}"
+: "${HALOS_LIB_HOSTNAMES:=/usr/lib/halos-core-containers/lib-hostnames.sh}"
+
+# Dev fallback: source from alongside this script when running uninstalled.
+if [ ! -f "$HALOS_LIB_HOSTNAMES" ]; then
+    SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    HALOS_LIB_HOSTNAMES="${SCRIPT_DIR}/lib-hostnames.sh"
+fi
+# shellcheck source=assets/lib-hostnames.sh
+. "$HALOS_LIB_HOSTNAMES"
+
+halos_load_hostnames
+HALOS_DOMAIN="$(halos_canonical_hostname)"
+
+# Publish atomically: write a per-PID temp then rename, so a consumer reading
+# the file mid-write never sees a partial line.
+mkdir -p "$(dirname "$HALOS_DOMAIN_FILE")"
+tmp="${HALOS_DOMAIN_FILE}.$$"
+printf 'HALOS_DOMAIN=%s\n' "$HALOS_DOMAIN" > "$tmp"
+mv -f "$tmp" "$HALOS_DOMAIN_FILE"
+
+echo "halos-resolve-domain: HALOS_DOMAIN=${HALOS_DOMAIN}"

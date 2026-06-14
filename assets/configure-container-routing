@@ -29,11 +29,13 @@ PORT_REGISTRY="${PORT_REGISTRY:-/etc/halos/port-registry}"
 PORT_RANGE_START=4430
 PORT_RANGE_END=4450
 
-# Get HALOS_DOMAIN from environment or derive from hostname
-if [ -z "${HALOS_DOMAIN}" ]; then
-    HOSTNAME="$(hostname -s)"
-    HALOS_DOMAIN="${HOSTNAME}.local"
-fi
+# HALOS_DOMAIN is consumed here for diagnostic logging only (all per-app
+# routers are path-only). It is read from the calling unit's environment when
+# available — core units load it from /run/halos/domain.env (published by
+# halos-resolve-domain.service); apps not yet wired to that file may leave it
+# empty, which is harmless for a log line. No longer re-derived here, to keep
+# a single canonical-hostname resolver.
+HALOS_DOMAIN="${HALOS_DOMAIN:-}"
 
 log() {
     echo "[configure-container-routing] $1" >&2

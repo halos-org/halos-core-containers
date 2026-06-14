@@ -22,9 +22,17 @@ set +a
 # Create runtime directory
 mkdir -p "${RUN_DIR}"
 
-# Load hostname list — the canonical hostname becomes HALOS_DOMAIN.
-# Falls back to ${hostname}.local when /etc/halos/hostnames.conf is
-# missing/invalid; HALOS_HOSTNAMES_FALLBACK is set in that case.
+# HALOS_DOMAIN (the canonical hostname / OIDC issuer) is resolved once by
+# halos-resolve-domain.service and provided to this unit via
+# EnvironmentFile=/run/halos/domain.env. We consume it from the environment
+# rather than deriving it here, so there is a single canonical-hostname
+# resolver and no stale-EnvironmentFile feedback loop (we never write
+# HALOS_DOMAIN back into runtime.env).
+#
+# The hostname *list* is still loaded here: the Authelia per-hostname
+# session.cookies block and the OIDC redirect_uris expansion below iterate
+# HALOS_HOSTNAMES_DNS[] (via halos_dns_hostnames / halos_expand_oidc_redirect_uri
+# / _halos_short_hostname), which the canonical-only domain.env does not carry.
 LIB_HOSTNAMES="/usr/lib/halos-core-containers/lib-hostnames.sh"
 if [ ! -f "$LIB_HOSTNAMES" ]; then
     # Source from package assets when running uninstalled (development).
@@ -35,11 +43,9 @@ fi
 halos_load_hostnames
 
 HOSTNAME_SHORT=$(hostname -s 2>/dev/null || hostname | cut -d. -f1)
-HALOS_DOMAIN="$(halos_canonical_hostname)"
 
 # Write common runtime environment
 cat > "${RUNTIME_ENV}" << EOF
-HALOS_DOMAIN=${HALOS_DOMAIN}
 HOSTNAME=${HOSTNAME_SHORT}
 EOF
 
