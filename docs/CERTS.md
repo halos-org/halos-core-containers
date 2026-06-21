@@ -59,6 +59,23 @@ already existing (first-boot ordering: `halos-manage-certs.service` runs
 initial provisioning and Traefik is not yet running — it picks up the
 freshly-signed leaf on its first start instead).
 
+### Served chain: leaf + device CA
+
+`halos-manage-certs` makes the served cert file (`halos.crt`) carry the **leaf
+followed by the device CA**, so both `:443` (Traefik) and `:9090` (Cockpit, which
+installs its override from the same file) present a two-cert chain. A self-signed
+root may be omitted from a TLS handshake (RFC 5246 §7.4.2 / RFC 8446 §4.4.2), and
+clients that already trust the CA ignore the extra cert — it is included
+deliberately so **TOFU clients that pin the issuing CA** (notably SensESP's
+Signal K CA-pinning) can capture the stable CA from the handshake and pin it
+instead of the rotating leaf.
+
+The CA is appended idempotently (only when `halos.crt` still holds the leaf
+alone), re-applied after every leaf re-sign, and assembled via stage-and-`mv` so
+a reader never sees a half-written chain. A successful append touches the dynamic
+config so a running Traefik reloads the new chain — Traefik's watcher does not
+observe the cert file itself (see the reload note above).
+
 ### Disabling the timer
 
 The 24-hour renewal check is safe to skip during a maintenance window or
@@ -83,8 +100,11 @@ covers `:9090` too.
 
 ### Where it lives
 
-- Combined PEM (leaf cert + leaf key) at `/etc/cockpit/ws-certs.d/99-halos.cert`,
-  mode `0640`, group `cockpit-ws` (when that group exists on the host).
+- Combined PEM (leaf cert + device CA + leaf key) at
+  `/etc/cockpit/ws-certs.d/99-halos.cert`, mode `0640`, group `cockpit-ws` (when
+  that group exists on the host). The device CA is present because the install
+  reads the served `halos.crt`, which carries the full leaf + CA chain (see
+  "Served chain: leaf + device CA" above).
 - The source files are unchanged at `/var/lib/container-apps/halos-core-containers/data/traefik/certs/halos.{crt,key}`.
 
 ### Why the `99-` prefix
@@ -401,6 +421,12 @@ diff /tmp/halos-ca.crt /tmp/halos-ca-after.crt   # expect a diff
 # 5. Anything else under the same hostname is unaffected (homarr still wins
 #    the catch-all path).
 curl -skI https://halos.local/ | head -1
+
+# 6. The served TLS chain is leaf + device CA (depth 0 = leaf, depth 1 = CA), so
+#    CA-pinning TOFU clients can capture the CA. Expect TWO certificates. The
+#    per-app HTTPS entrypoints (4430-4450) serve the same default cert.
+openssl s_client -connect halos.local:443 -servername halos.local -showcerts \
+    </dev/null 2>/dev/null | grep -c 'BEGIN CERTIFICATE'   # expect 2
 ```
 
 ## Installing a custom CA
