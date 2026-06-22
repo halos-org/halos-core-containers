@@ -135,6 +135,16 @@ _traefik_tls_config() { printf '%s' "$1/traefik-dynamic/tls-default.yml"; }
 _system_trust_ca() { printf '%s' "$1/system-trust/halos-ca.crt"; }
 _update_ca_marker() { printf '%s' "$1/update-ca-ran"; }
 
+# PEM-bundle helpers. _pem_cert_count counts certs; _pem_cert_fp returns the
+# SHA-256 fingerprint of the N-th cert (1-based) — openssl reads only the first
+# cert in its input, so streaming from block N onward yields block N.
+_pem_cert_count() { grep -c '^-----BEGIN CERTIFICATE-----' "$1"; }
+_pem_cert_fp() {
+    awk -v want="$2" 'BEGIN{n=0} /^-----BEGIN CERTIFICATE-----/{n++} n>=want' "$1" \
+        | openssl x509 -noout -fingerprint -sha256 2>/dev/null
+}
+_inode() { stat -c '%i' "$1" 2>/dev/null || stat -f '%i' "$1"; }
+
 # ---------------------------------------------------------------------------
 
 test_first_boot_bootstrap_creates_all_artifacts() {
@@ -1043,9 +1053,196 @@ test_system_trust_update_failure_is_nonfatal() {
     fi
 }
 
+# --- Served chain: leaf + device CA (for TOFU client CA pinning) ------------
+
+test_traefik_serves_leaf_plus_ca_chain() {
+    # The served cert file must contain the leaf FIRST (TLS requires the
+    # end-entity cert at depth 0) followed by the device CA so TOFU clients
+    # (e.g. SensESP CA-pinning) can capture and pin the CA. The rerun must be
+    # idempotent (no second CA appended).
+    local d cert_file count ca_crt ca_fp chain_ca_fp
+    d=$(new_scratch leaf_plus_ca)
+    run_script "$d" >/dev/null
+    cert_file=$(_cert_file "$d")
+    assert_file "$cert_file" "served cert" || return 1
+    count=$(_pem_cert_count "$cert_file")
+    assert_eq "$count" "2" "served cert must contain leaf + CA" || return 1
+
+    # 1st cert must be the leaf (the device hostname, CA:FALSE) — pins chain order.
+    if ! awk 'BEGIN{n=0} /^-----BEGIN CERTIFICATE-----/{n++} n==1' "$cert_file" \
+        | openssl x509 -noout -subject 2>/dev/null | grep -q "fixture.test"; then
+        echo "1st cert in chain must be the leaf (CN=fixture.test)"; return 1
+    fi
+    if ! awk 'BEGIN{n=0} /^-----BEGIN CERTIFICATE-----/{n++} n==1' "$cert_file" \
+        | openssl x509 -noout -text 2>/dev/null | grep -q "CA:FALSE"; then
+        echo "1st cert in chain must be a leaf (basicConstraints CA:FALSE)"; return 1
+    fi
+
+    ca_crt=$(_auto_ca_crt "$d")
+    ca_fp=$(openssl x509 -in "$ca_crt" -noout -fingerprint -sha256 2>/dev/null)
+    chain_ca_fp=$(_pem_cert_fp "$cert_file" 2)
+    assert_eq "$chain_ca_fp" "$ca_fp" "2nd cert in chain must be the device CA" \
+        || return 1
+
+    run_script "$d" >/dev/null
+    count=$(_pem_cert_count "$cert_file")
+    assert_eq "$count" "2" "idempotent rerun must not append the CA again" \
+        || return 1
+}
+
+test_chain_migration_appends_ca_and_reloads_existing_leaf() {
+    # The motivating scenario: an already-provisioned device upgraded in place.
+    # It has a valid leaf-only halos.crt with a matching sentinel (NEED_LEAF
+    # stays false), and Traefik is running (dynamic config present). The CA must
+    # be appended WITHOUT re-signing the leaf, and the dynamic config touched so
+    # the running Traefik re-reads the new chain — the watcher does not see the
+    # cert file itself.
+    local d cert_file leaf_fp_before key_inode_before out
+    d=$(new_scratch chain_migration)
+    _seed_traefik_tls_config "$d"
+    run_script "$d" >/dev/null
+    cert_file=$(_cert_file "$d")
+    # Emulate the pre-upgrade state: strip the appended CA back to leaf-only,
+    # leaving the sentinel and key intact so this run takes the no-re-sign path.
+    awk 'BEGIN{n=0} /^-----BEGIN CERTIFICATE-----/{n++} n==1{print} /^-----END CERTIFICATE-----/{if(n==1) exit}' \
+        "$cert_file" > "$cert_file.leaf-only"
+    mv "$cert_file.leaf-only" "$cert_file"
+    assert_eq "$(_pem_cert_count "$cert_file")" "1" "precondition: leaf-only file" || return 1
+    leaf_fp_before=$(_pem_cert_fp "$cert_file" 1)
+    key_inode_before=$(_inode "$(_key_file "$d")")
+    touch -t 202001010000 "$(_traefik_tls_config "$d")"
+    touch -t 202401010000 "$d/mtime-sentinel"
+
+    out=$(run_script "$d" 2>&1) || { echo "$out"; return 1; }
+    if ! echo "$out" | grep -q "Using existing leaf certificate"; then
+        echo "migration run must NOT re-sign the leaf (expected 'Using existing leaf'); got:"
+        echo "$out"; return 1
+    fi
+    assert_eq "$(_pem_cert_count "$cert_file")" "2" "CA must be appended on migration" || return 1
+    assert_eq "$(_pem_cert_fp "$cert_file" 1)" "$leaf_fp_before" \
+        "leaf must be unchanged across migration (not re-signed)" || return 1
+    assert_eq "$(_pem_cert_fp "$cert_file" 2)" \
+        "$(openssl x509 -in "$(_auto_ca_crt "$d")" -noout -fingerprint -sha256 2>/dev/null)" \
+        "appended cert must be the active device CA" || return 1
+    assert_eq "$(_inode "$(_key_file "$d")")" "$key_inode_before" \
+        "leaf key must be untouched on migration" || return 1
+    if ! echo "$out" | grep -q "touching Traefik dynamic config to reload certs"; then
+        echo "append on the no-re-sign migration path must touch the dynamic config; got:"
+        echo "$out"; return 1
+    fi
+    if [ ! "$(_traefik_tls_config "$d")" -nt "$d/mtime-sentinel" ]; then
+        echo "tls-default.yml mtime must advance after the migration reload touch"; return 1
+    fi
+}
+
+test_chain_reappends_ca_after_leaf_resign() {
+    # Every re-sign overwrites halos.crt with a leaf-only file (atomic mv in
+    # halos_ca_sign_leaf), so the chain count drops to 1 and the CA must be
+    # re-appended. This is the lifetime-correctness path the idempotent rerun
+    # does NOT exercise. Drive it via the renewal gate (near-expiry leaf +
+    # matching sentinel) so NEED_LEAF=true without a config/CA change.
+    local d cert_file leaf_fp_before out
+    d=$(new_scratch chain_resign)
+    _seed_traefik_tls_config "$d"
+    run_script "$d" >/dev/null
+    cert_file=$(_cert_file "$d")
+    leaf_fp_before=$(_pem_cert_fp "$cert_file" 1)
+    (
+        # shellcheck source=../assets/lib-ca.sh
+        . "$LIB_CA"
+        # shellcheck source=../assets/lib-hostnames.sh
+        . "$LIB_HOSTNAMES"
+        HALOS_HOSTNAMES_FILE="$d/hostnames.conf" halos_load_hostnames
+        halos_ca_sign_leaf \
+            "$(_auto_ca_crt "$d")" "$(_auto_ca_key "$d")" \
+            "$(_cert_file "$d")" "$(_key_file "$d")" \
+            "DNS:fixture.test" "fixture.test" \
+            30
+        ca_fp=$(halos_ca_fingerprint "$(_auto_ca_crt "$d")")
+        hn_hash=$(halos_hostnames_hash)
+        sentinel=$(halos_ca_sentinel_compose "$hn_hash" "$ca_fp")
+        printf '%s' "$sentinel" > "$(_domain_file "$d")"
+    )
+    assert_eq "$(_pem_cert_count "$cert_file")" "1" "precondition: re-sign left leaf-only file" || return 1
+
+    out=$(run_script "$d" 2>&1) || { echo "$out"; return 1; }
+    if ! echo "$out" | grep -q "within renewal threshold"; then
+        echo "expected renewal-gate re-sign; got:"; echo "$out"; return 1
+    fi
+    assert_eq "$(_pem_cert_count "$cert_file")" "2" "CA must be re-appended after re-sign" || return 1
+    if [ "$(_pem_cert_fp "$cert_file" 1)" = "$leaf_fp_before" ]; then
+        echo "leaf must be a freshly-signed cert after re-sign (fingerprint should differ)"; return 1
+    fi
+    assert_eq "$(_pem_cert_fp "$cert_file" 2)" \
+        "$(openssl x509 -in "$(_auto_ca_crt "$d")" -noout -fingerprint -sha256 2>/dev/null)" \
+        "re-appended cert must be the active device CA" || return 1
+}
+
+test_chain_reappends_new_ca_after_rotation() {
+    # When the auto-CA rotates, the leaf is re-signed against the NEW CA and the
+    # served chain must carry the NEW CA — the exact invariant a CA-pinning TOFU
+    # client depends on. A stale appended CA would have clients pin a CA the
+    # device no longer issues leaves under.
+    local d cert_file old_ca_fp new_ca_fp nb na
+    d=$(new_scratch chain_ca_rotation)
+    run_script "$d" >/dev/null
+    cert_file=$(_cert_file "$d")
+    old_ca_fp=$(_pem_cert_fp "$cert_file" 2)
+    # Force CA rotation: overwrite the auto-CA with an already-expired cert.
+    nb=$(date -u -d "@$(( $(date -u +%s) - 30 * 86400 ))" +%Y%m%d%H%M%SZ 2>/dev/null \
+        || date -u -r "$(( $(date -u +%s) - 30 * 86400 ))" +%Y%m%d%H%M%SZ)
+    na=$(date -u -d "@$(( $(date -u +%s) - 86400 ))" +%Y%m%d%H%M%SZ 2>/dev/null \
+        || date -u -r "$(( $(date -u +%s) - 86400 ))" +%Y%m%d%H%M%SZ)
+    openssl req -x509 -nodes -key "$(_auto_ca_key "$d")" \
+        -out "$(_auto_ca_crt "$d")" \
+        -not_before "$nb" -not_after "$na" \
+        -subj "/CN=Expired Auto CA" \
+        -addext "basicConstraints=critical,CA:TRUE,pathlen:0" \
+        -addext "keyUsage=critical,keyCertSign,cRLSign" \
+        >/dev/null 2>&1 || { echo "fixture cert regen failed"; return 1; }
+    sleep 1
+    run_script "$d" >/dev/null
+    assert_eq "$(_pem_cert_count "$cert_file")" "2" "chain must remain leaf + CA after rotation" || return 1
+    new_ca_fp=$(openssl x509 -in "$(_auto_ca_crt "$d")" -noout -fingerprint -sha256 2>/dev/null)
+    if [ "$new_ca_fp" = "$old_ca_fp" ]; then
+        echo "precondition: CA must have rotated (fingerprint unchanged)"; return 1
+    fi
+    assert_eq "$(_pem_cert_fp "$cert_file" 2)" "$new_ca_fp" \
+        "served chain must carry the NEW CA after rotation, not the stale one" || return 1
+}
+
+test_chain_includes_custom_ca() {
+    # The append runs in custom-CA mode too: the served chain must be leaf +
+    # the operator-supplied CA, so a future auto-only guard can't silently
+    # regress custom-CA devices to leaf-only.
+    local d cert_file custom_fp
+    d=$(new_scratch chain_custom_ca)
+    (
+        umask 077
+        openssl req -x509 -nodes -newkey rsa:2048 -days 365 \
+            -keyout "$d/custom-ca/ca.key" -out "$d/custom-ca/ca.crt" \
+            -subj "/CN=Test Operator CA" \
+            -addext "basicConstraints=critical,CA:TRUE,pathlen:0" \
+            -addext "keyUsage=critical,keyCertSign,cRLSign" \
+            >/dev/null 2>&1
+    ) || { echo "custom CA fixture creation failed"; return 1; }
+    chmod 0700 "$d/custom-ca"
+    run_script "$d" >/dev/null
+    cert_file=$(_cert_file "$d")
+    assert_eq "$(_pem_cert_count "$cert_file")" "2" "custom-mode chain must be leaf + custom CA" || return 1
+    custom_fp=$(openssl x509 -in "$d/custom-ca/ca.crt" -noout -fingerprint -sha256 2>/dev/null)
+    assert_eq "$(_pem_cert_fp "$cert_file" 2)" "$custom_fp" \
+        "2nd cert in chain must be the operator-supplied custom CA" || return 1
+}
+
 # ---------------------------------------------------------------------------
 
 run_test test_first_boot_bootstrap_creates_all_artifacts
+run_test test_traefik_serves_leaf_plus_ca_chain
+run_test test_chain_migration_appends_ca_and_reloads_existing_leaf
+run_test test_chain_reappends_ca_after_leaf_resign
+run_test test_chain_reappends_new_ca_after_rotation
+run_test test_chain_includes_custom_ca
 run_test test_first_boot_publishes_valid_mobileconfig
 run_test test_idempotent_rerun_preserves_leaf_and_sentinel
 run_test test_hostname_change_triggers_leaf_only_resign

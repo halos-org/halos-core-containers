@@ -286,6 +286,49 @@ else
     echo "Using existing leaf certificate for ${HALOS_DOMAIN}"
 fi
 
+# Ensure the served certificate file is the full chain (leaf + device CA) so
+# TOFU clients -- notably SensESP's Signal K CA-pinning -- can capture and pin
+# the stable CA instead of the rotating leaf. The self-signed device root is
+# normally omitted from a served chain (RFC 5246 7.4.2 / RFC 8446 4.4.2 permit
+# it, and clients that already trust the CA ignore the extra cert); it is
+# included here deliberately. Do NOT remove this as "redundant".
+#
+# Idempotent: only acts when CERT_FILE still holds the leaf alone, so re-runs
+# and already-migrated devices are untouched. The count is anchored to the PEM
+# delimiter so a stray "BEGIN CERTIFICATE" inside a comment can't inflate it.
+# Runs before the Cockpit install so :9090 serves the same chain.
+#
+# Assembled via stage+mv (the atomic-write pattern used by halos_ca_sign_leaf
+# and halos_cockpit_install_leaf): an in-place "cat >>" interrupted mid-write
+# would leave the leaf plus a truncated second block, which the count guard
+# would then read as already-migrated and freeze forever. The mv publishes the
+# complete validated chain or nothing.
+#
+# Traefik's file-provider watcher does NOT reload on a cert-file change
+# (verified on-device: the served chain stayed at the leaf alone until the
+# dynamic config was touched; see the watcher note further below), so a
+# successful publish explicitly pokes the dynamic config to force a reload --
+# the same mechanism the leaf-rotation path uses.
+if [ -f "${CERT_FILE}" ] && [ -f "${CA_CRT}" ] &&
+    [ "$(grep -c '^-----BEGIN CERTIFICATE-----' "${CERT_FILE}")" -eq 1 ]; then
+    echo "Appending device CA to ${CERT_FILE} so Traefik serves leaf + CA..."
+    CHAIN_NEW="${CERT_FILE}.new.$$"
+    rm -f "${CHAIN_NEW}"
+    if cat "${CERT_FILE}" "${CA_CRT}" > "${CHAIN_NEW}" \
+        && openssl x509 -in "${CHAIN_NEW}" -noout 2>/dev/null \
+        && [ "$(grep -c '^-----BEGIN CERTIFICATE-----' "${CHAIN_NEW}")" -ge 2 ] \
+        && chmod 644 "${CHAIN_NEW}" \
+        && mv "${CHAIN_NEW}" "${CERT_FILE}"; then
+        if [ -f "${TRAEFIK_TLS_CONFIG}" ]; then
+            echo "Chain updated; touching Traefik dynamic config to reload certs at ${TRAEFIK_TLS_CONFIG}..."
+            touch -c "${TRAEFIK_TLS_CONFIG}" || true
+        fi
+    else
+        rm -f "${CHAIN_NEW}"
+        echo "WARNING: failed to assemble leaf + device CA chain at ${CERT_FILE}; Traefik keeps serving the leaf alone until the next run." >&2
+    fi
+fi
+
 # Share the leaf with Cockpit (:9090) by installing a combined-PEM override at
 # ${COCKPIT_WS_CERTS_DIR}/99-halos.cert. cockpit-tls picks the lex-last *.cert
 # file at socket activation, so the 99- prefix overrides the upstream
