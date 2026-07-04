@@ -22,7 +22,7 @@ The SSO architecture provides unified authentication for all HaLOS web applicati
          v              v              v              v
    ┌──────────┐   ┌──────────┐   ┌──────────┐   ┌──────────┐
    │  Homarr  │   │ Grafana  │   │ InfluxDB │   │ Signal K │
-   │  (OIDC)  │   │ (FwdAuth)│   │ (FwdAuth)│   │(host net)│
+   │  (OIDC)  │   │  (OIDC)  │   │ (no SSO) │   │  (OIDC)  │
    └──────────┘   └──────────┘   └──────────┘   └──────────┘
          │              │              │              │
          └──────────────┴──────────────┴──────────────┘
@@ -476,9 +476,9 @@ traefik-container
        │
        └── application containers
             ├── homarr-container (OIDC)
-            ├── grafana-container (ForwardAuth)
-            ├── influxdb-container (ForwardAuth)
-            └── signalk-container (ForwardAuth, host networking)
+            ├── grafana-container (OIDC)
+            ├── influxdb-container (no SSO)
+            └── signalk-container (OIDC, host networking)
 ```
 
 Package dependencies ensure correct installation order. Systemd service dependencies ensure correct startup order.
