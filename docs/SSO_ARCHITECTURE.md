@@ -244,22 +244,27 @@ Authelia uses multi-file configuration. OIDC clients are managed via a `.d` dire
 
 **App installation** (simple):
 1. Package installs YAML snippet to `/etc/halos/oidc-clients.d/{app_id}.yml`
-2. Package triggers Authelia restart (via systemd dependency or postinst)
 
-**Authelia prestart** (handles merging):
-1. Reads all files from `/etc/halos/oidc-clients.d/*.yml`
-2. Merges client definitions into single `oidc-clients.yml`
-3. Authelia container starts with merged config
+**Merging** happens in two places, both running the same library
+(`/usr/lib/halos-core-containers/lib-oidc-clients.sh`):
 
-**Important**: Authelia only reads OIDC client snippets during its prestart phase. If an OIDC-enabled app is installed while Authelia is already running, the new client won't be registered until Authelia restarts. The systemd service dependency ensures correct ordering on system boot, but manual restart may be needed after installing new OIDC apps:
+1. `halos-core-containers` prestart, before the stack comes up
+2. `/usr/bin/reload-oidc-clients`, while it is already running
+
+The tool reads every snippet, hashes each app's plaintext secret with Authelia's own CLI, renders `oidc-clients.yml`, and restarts the Authelia container. `halos-oidc-clients-reload.path` runs it whenever anything in `/etc/halos/oidc-clients.d/` changes, so installing an OIDC app — or rotating its client secret — registers without operator action.
+
+The merge is input-addressed: snippet text, the contents of each referenced `client_secret_file`, the hostname list and Authelia's signing material are digested into a stamp beside the rendered file. A run whose inputs match the stamp rewrites nothing and leaves Authelia running. Apps rewrite their snippet on every start, so this is what keeps a routine app restart from bouncing SSO.
+
+To force a re-render (for example after editing a snippet by hand), remove the stamp and run the tool:
 
 ```bash
-systemctl restart authelia-container
+rm /var/lib/container-apps/halos-core-containers/data/authelia/oidc-clients.yml.stamp
+reload-oidc-clients
 ```
 
 **App removal**:
 1. Package's `postrm` removes `/etc/halos/oidc-clients.d/{app_id}.yml`
-2. Authelia restart merges remaining clients
+2. The path unit fires, and the merge drops the client from the registration
 
 **Note**: OIDC snippet cleanup requires custom `postrm` logic in each OIDC app package. This will be automated by container-packaging-tools in Phase 2 (Issue #151).
 

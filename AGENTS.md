@@ -143,10 +143,27 @@ empty to disable it, or point it at a scratch state file.
 that drop OIDC client snippets into `/etc/halos/oidc-clients.d/` should
 write `redirect_uris` entries with the literal token `${HALOS_DOMAIN}`
 preserved (use `<<'EOF'` heredoc, or escape as `\${HALOS_DOMAIN}` in an
-unquoted heredoc). The merger in `prestart.sh` and `reload-oidc-clients`
-expands the placeholder to one URI per configured DNS hostname; entries
-without the placeholder pass through unchanged but only authenticate via
-the literal hostname they hard-code.
+unquoted heredoc). The merger expands the placeholder to one URI per
+configured DNS hostname; entries without the placeholder pass through
+unchanged but only authenticate via the literal hostname they hard-code.
+
+**OIDC client registration contract.** The merger itself lives once, in
+`/usr/lib/halos-core-containers/lib-oidc-clients.sh`, sourced by both
+`prestart.sh` (boot-time render) and `/usr/bin/reload-oidc-clients` (hot
+reload). Don't reimplement snippet parsing or rendering in either caller —
+the duplicate that preceded this library drifted until the standalone tool
+wrote to a path Authelia never read (#200).
+
+`halos-oidc-clients-reload.path` watches `/etc/halos/oidc-clients.d/` and
+runs the tool on every change, so an app that rotates its client secret is
+registered without operator action (#201). Apps write their snippet on each
+start, so the trigger fires far more often than the registration changes:
+the merger digests its inputs (snippet text, referenced secret file
+contents, hostname list, signing material) into a stamp beside the rendered
+file and returns early when they match, which is what keeps a routine app
+restart from bouncing Authelia. Any change to the rendered output format
+must bump `HALOS_OIDC_RENDER_VERSION` — the stamp mixes it in, and without
+the bump an upgraded package would read a stale registration as current.
 
 ## Building
 
