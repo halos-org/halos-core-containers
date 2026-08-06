@@ -89,5 +89,33 @@ else
     FAILS=$((FAILS + 1))
 fi
 
+# 3. lib-oidc-clients.sh reads four caller globals. prestart runs under set -e
+#    but not set -u, so a dropped assignment is not an error — it renders the
+#    registration to the wrong path and Authelia boots with a stale client list,
+#    which is bug #200's class on the other caller.
+for global in OIDC_CLIENTS_DIR AUTHELIA_OIDC_FILE OIDC_HMAC_SECRET OIDC_PRIVATE_KEY; do
+    if printf '%s\n' "$noncomment" | grep -Eq "^\\s*${global}="; then
+        printf '%sPASS%s prestart.sh sets %s before merging\n' "$GREEN" "$RESET" "$global"
+    else
+        printf '%sFAIL%s prestart.sh never assigns %s\n' "$RED" "$RESET" "$global"
+        FAILS=$((FAILS + 1))
+    fi
+done
+
+# 4. The merge call must stay guarded. Bare under set -e, a transient hashing
+#    failure aborts prestart and the whole stack fails to start — the outcome
+#    the tolerated-failure path exists to avoid.
+if printf '%s\n' "$noncomment" | grep -Eq '^\s*(if\s+)?halos_oidc_merge_clients\s*(;|$|\|\|)'; then
+    if printf '%s\n' "$noncomment" | grep -Eq '^\s*halos_oidc_merge_clients\s*$'; then
+        printf '%sFAIL%s prestart.sh calls halos_oidc_merge_clients unguarded under set -e\n' "$RED" "$RESET"
+        FAILS=$((FAILS + 1))
+    else
+        printf '%sPASS%s prestart.sh tolerates a failed merge\n' "$GREEN" "$RESET"
+    fi
+else
+    printf '%sFAIL%s prestart.sh does not call halos_oidc_merge_clients\n' "$RED" "$RESET"
+    FAILS=$((FAILS + 1))
+fi
+
 printf '\n%d check(s) failed\n' "$FAILS"
 [ "$FAILS" -eq 0 ]

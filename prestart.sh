@@ -341,9 +341,6 @@ process_authelia_template() {
     local template
     template=$(cat "${AUTHELIA_TEMPLATE}")
 
-    local indented_key
-    indented_key=$(echo "${OIDC_PRIVATE_KEY}" | awk 'NR==1 {print} NR>1 {print "          " $0}')
-
     # Build session.cookies block — one entry per configured multi-label
     # DNS hostname. Two exclusions:
     #
@@ -406,27 +403,39 @@ process_authelia_template() {
     template="${template/${cookies_marker}/${cookies_block}}"
 
     template="${template//\$\{SESSION_SECRET\}/${SESSION_SECRET}}"
-    template="${template//\$\{OIDC_HMAC_SECRET\}/${OIDC_HMAC_SECRET}}"
     template="${template//\$\{STORAGE_ENCRYPTION_KEY\}/${STORAGE_ENCRYPTION_KEY}}"
     template="${template//\$\{RESET_PASSWORD_JWT_SECRET\}/${RESET_PASSWORD_JWT_SECRET}}"
     template="${template//\$\{REDIS_PASSWORD\}/${REDIS_PASSWORD}}"
     template="${template//\$\{HALOS_DOMAIN\}/${HALOS_DOMAIN}}"
 
-    echo "${template}" | awk -v key="${indented_key}" '
-        /\$\{OIDC_PRIVATE_KEY\}/ { sub(/\$\{OIDC_PRIVATE_KEY\}/, key) }
-        { print }
-    ' > "${AUTHELIA_CONFIG_FILE}"
+    printf '%s\n' "${template}" > "${AUTHELIA_CONFIG_FILE}"
 
     chmod 600 "${AUTHELIA_CONFIG_FILE}"
+
+    # The hostname list this config's session.cookies block was built from.
+    # reload-oidc-clients expands redirect_uris against it rather than against a
+    # live resolution, so the two halves of Authelia's config cannot disagree
+    # between stack starts.
+    halos_dns_hostnames > "${AUTHELIA_DATA}/hostnames.snapshot"
+
     echo "Authelia configuration generated"
 }
 
 process_authelia_template
 # A failed merge keeps the previous registration and is not worth refusing to
-# boot over: prestart runs under set -e, and the stack coming up with a stale
-# client list beats the stack not coming up at all. The reload path unit retries
-# on the next snippet write.
-halos_oidc_merge_clients || echo "WARNING: OIDC client merge failed - Authelia keeps its previous client registration"
+# boot over: the stack coming up with a stale client list beats the stack not
+# coming up at all. halos-oidc-clients-reload.service runs after this unit
+# reaches active and retries, so the failure is not terminal.
+if halos_oidc_merge_clients; then
+    if [ "${HALOS_OIDC_CHANGED}" -eq 1 ]; then
+        # Nothing to apply separately: the containers start immediately after.
+        halos_oidc_commit
+    else
+        echo "OIDC client registration already current"
+    fi
+else
+    echo "WARNING: OIDC client merge failed - Authelia keeps its previous client registration" >&2
+fi
 
 # Write Redis password to runtime environment for docker-compose
 echo "REDIS_PASSWORD=${REDIS_PASSWORD}" >> "${RUNTIME_ENV}"

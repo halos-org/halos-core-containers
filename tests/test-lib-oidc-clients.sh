@@ -141,11 +141,8 @@ printf '%s\n' "$*" >> "${DOCKER_STUB_LOG}"
 case "$1" in
     run)
         [ "${DOCKER_STUB_HASH_RC:-0}" -ne 0 ] && exit "${DOCKER_STUB_HASH_RC}"
-        for arg in "$@"; do
-            case "$prev" in --password) plaintext="$arg" ;; esac
-            prev="$arg"
-        done
-        printf 'Digest: $pbkdf2-sha512$fake$%s\n' "${plaintext:-none}"
+        # The plaintext arrives through the environment, not argv.
+        printf 'Digest: $pbkdf2-sha512$fake$%s\n' "${HALOS_OIDC_PW:-none}"
         ;;
     inspect)
         printf '%s\n' "${DOCKER_STUB_STATE:-true}"
@@ -187,28 +184,41 @@ merge_on() {
     HALOS_HOSTNAMES_DOMAIN_STATE=""
     unset HALOS_HOSTNAMES_DNS HALOS_HOSTNAMES_IPS HALOS_HOSTNAMES_CANONICAL
     # shellcheck source=/dev/null
-    . "$LIB_HOSTNAMES"
+    . "$root/usr/lib/halos-core-containers/lib-hostnames.sh"
     halos_load_hostnames
 
     # shellcheck source=/dev/null
-    . "$LIB_OIDC"
+    . "$root/usr/lib/halos-core-containers/lib-oidc-clients.sh"
 
     OIDC_CLIENTS_DIR="$root/etc/halos/oidc-clients.d"
     AUTHELIA_OIDC_FILE="${authelia}/oidc-clients.yml"
     OIDC_HMAC_SECRET="hmac-fixture"
     OIDC_PRIVATE_KEY="$(cat "${authelia}/oidc_private_key.pem")"
 
-    halos_oidc_merge_clients
+    # Callers apply the render and then commit; the tests stand in for the apply.
+    # MERGE_NO_COMMIT models an apply that never succeeded.
+    halos_oidc_merge_clients || return 1
+    [ "${MERGE_NO_COMMIT:-0}" -eq 1 ] || halos_oidc_commit
+}
+
+# Merge whose apply failed, so the result was never recorded.
+merge_on_uncommitted() {
+    MERGE_NO_COMMIT=1 merge_on "$1"
+    local rc=$?
+    MERGE_NO_COMMIT=0
+    return $rc
 }
 
 # Run the installed-tool entry point against $1's scratch layout. The hostname
 # file and domain-state overrides are lib-hostnames.sh's own documented seams.
 run_reload() {
-    local root="$1"
-    HALOS_OIDC_ROOT="$root" \
+    local root="$1"; shift
+    HALOS_ETC_DIR="$root/etc/container-apps/halos-core-containers" \
+    HALOS_LIB_DIR="$root/usr/lib/halos-core-containers" \
+    HALOS_OIDC_CLIENTS_DIR="$root/etc/halos/oidc-clients.d" \
     HALOS_HOSTNAMES_FILE="$root/etc/halos/hostnames.conf" \
     HALOS_HOSTNAMES_DOMAIN_STATE="" \
-        bash "$RELOAD_TOOL"
+        bash "$RELOAD_TOOL" "$@"
 }
 
 # ---------------------------------------------------------------------------
@@ -341,19 +351,6 @@ test_externally_modified_registration_triggers_rerender() {
         "registration not restored"
 }
 
-test_render_version_bump_invalidates_stamp() {
-    new_device; local root="$DEV_ROOT"
-    write_client "$root" "signalk" "sekrit-one"
-    merge_on "$root" > /dev/null
-
-    # Simulates a package upgrade that changes the output format: the stamp on
-    # disk was written by the old renderer and must not mark it current.
-    HALOS_OIDC_RENDER_VERSION=$((HALOS_OIDC_RENDER_VERSION + 1))
-    halos_oidc_merge_clients > /dev/null
-
-    assert_eq "$HALOS_OIDC_CHANGED" "1" "render-version bump must invalidate the stamp"
-}
-
 test_hash_failure_keeps_the_previous_registration() {
     new_device; local root="$DEV_ROOT"
     write_client "$root" "signalk" "sekrit-one"
@@ -364,7 +361,7 @@ test_hash_failure_keeps_the_previous_registration() {
     # Hashing is a docker run; when it fails, dropping the client would break
     # exactly the logins this whole mechanism exists to keep working.
     printf '%s\n' "rotated" > "$root/var/lib/container-apps/signalk/data/oidc-secret"
-    DOCKER_STUB_HASH_RC=1 merge_on "$root" > /dev/null && return 1
+    DOCKER_STUB_HASH_RC=1 merge_on "$root" > /dev/null 2>&1 && return 1
 
     assert_eq "$(cat "$rendered")" "$before" "a failed hash must not replace the registration"
 }
@@ -375,7 +372,7 @@ test_hash_failure_is_retried_on_the_next_run() {
     merge_on "$root" > /dev/null
 
     printf '%s\n' "rotated" > "$root/var/lib/container-apps/signalk/data/oidc-secret"
-    DOCKER_STUB_HASH_RC=1 merge_on "$root" > /dev/null || true
+    DOCKER_STUB_HASH_RC=1 merge_on "$root" > /dev/null 2>&1 || true
 
     # The inputs did not change between the failure and this run, so only a
     # discarded stamp makes the retry happen.
@@ -390,7 +387,7 @@ test_hash_failure_still_leaves_a_loadable_config() {
     write_client "$root" "signalk" "sekrit-one"
 
     # X_AUTHELIA_CONFIG lists this file, so Authelia will not start without it.
-    DOCKER_STUB_HASH_RC=1 merge_on "$root" > /dev/null && return 1
+    DOCKER_STUB_HASH_RC=1 merge_on "$root" > /dev/null 2>&1 && return 1
 
     local rendered="$(authelia_dir "$root")/oidc-clients.yml"
     if [ ! -f "$rendered" ]; then
@@ -400,14 +397,122 @@ test_hash_failure_still_leaves_a_loadable_config() {
     assert_contains "$(cat "$rendered")" "No clients configured" "expected the empty placeholder"
 }
 
+test_uncommitted_render_is_retried() {
+    new_device; local root="$DEV_ROOT"
+    write_client "$root" "signalk" "sekrit-one"
+    merge_on_uncommitted "$root" > /dev/null
+
+    # The render happened but was never applied, so the next run must redo it
+    # rather than read the file on disk as live.
+    merge_on "$root" > /dev/null
+    assert_eq "$HALOS_OIDC_CHANGED" "1" "an unapplied render must not be recorded as current"
+}
+
+test_library_change_invalidates_the_stamp() {
+    new_device; local root="$DEV_ROOT"
+    write_client "$root" "signalk" "sekrit-one"
+    merge_on "$root" > /dev/null
+
+    # Stands in for a package upgrade that changes how the registration is
+    # rendered — including the redirect_uri expansion in lib-hostnames.sh, which
+    # lives in a different file than the renderer.
+    printf '\n# upgraded\n' >> "$root/usr/lib/halos-core-containers/lib-hostnames.sh"
+    merge_on "$root" > /dev/null
+    assert_eq "$HALOS_OIDC_CHANGED" "1" "a renderer change must invalidate the stamp"
+}
+
+test_signing_material_change_triggers_rerender() {
+    new_device; local root="$DEV_ROOT"
+    write_client "$root" "signalk" "sekrit-one"
+    merge_on "$root" > /dev/null
+
+    # prestart regenerates these whenever they are absent; a registration built
+    # from the old pair verifies no token Authelia now issues.
+    printf -- '-----BEGIN PRIVATE KEY-----\nROTATED\n-----END PRIVATE KEY-----\n' \
+        > "$(authelia_dir "$root")/oidc_private_key.pem"
+    merge_on "$root" > /dev/null
+    assert_eq "$HALOS_OIDC_CHANGED" "1" "a rotated signing key must re-render" || return 1
+
+    halos_oidc_commit
+    OIDC_HMAC_SECRET="hmac-rotated" halos_oidc_merge_clients > /dev/null
+    assert_eq "$HALOS_OIDC_CHANGED" "1" "a rotated hmac secret must re-render"
+}
+
+test_empty_secret_file_is_not_registered() {
+    new_device; local root="$DEV_ROOT"
+    write_client "$root" "signalk" "sekrit-one"
+    : > "$root/var/lib/container-apps/signalk/data/oidc-secret"
+
+    local log; log="$(merge_on "$root" 2>&1)"
+    assert_contains "$log" "WARNING" "an empty secret must warn" || return 1
+    assert_not_contains "$(cat "$(authelia_dir "$root")/oidc-clients.yml")" "client_id: signalk" \
+        "a client with an empty secret must not be registered with the empty-string hash"
+}
+
+test_snippet_without_usable_redirect_uris_is_skipped() {
+    new_device; local root="$DEV_ROOT"
+    write_client "$root" "signalk" "sekrit-one"
+    # Flow-style sequence: valid YAML, and what a generic emitter produces, but
+    # not the block shape the shell parser reads. Rendering it would emit an
+    # empty redirect_uris key, which Authelia rejects at config load — taking
+    # every SSO route down rather than this one client's logins.
+    local secret="$root/var/lib/container-apps/flowapp/data/oidc-secret"
+    mkdir -p "$(dirname "$secret")"
+    printf 'sekrit-flow\n' > "$secret"
+    cat > "$root/etc/halos/oidc-clients.d/flowapp.yml" << EOF
+client_id: flowapp
+client_secret_file: ${secret}
+redirect_uris: ['https://\${HALOS_DOMAIN}/cb']
+EOF
+
+    local log; log="$(merge_on "$root" 2>&1)"
+    local out; out="$(cat "$(authelia_dir "$root")/oidc-clients.yml")"
+    assert_contains "$log" "no usable redirect_uris" "unsupported shape must warn" || return 1
+    assert_not_contains "$out" "client_id: flowapp" "client with no redirect_uris must be skipped" || return 1
+    assert_contains "$out" "client_id: signalk" "the healthy client must still register"
+}
+
+test_duplicate_key_cannot_escape_the_client_mapping() {
+    new_device; local root="$DEV_ROOT"
+    write_client "$root" "signalk" "sekrit-one"
+    # A repeated top-level key previously yielded a multi-line value that landed
+    # at column 0 of the rendered file, i.e. arbitrary top-level Authelia config.
+    printf 'client_name: injected\n' >> "$root/etc/halos/oidc-clients.d/signalk.yml"
+
+    merge_on "$root" > /dev/null
+    if grep -q '^injected' "$(authelia_dir "$root")/oidc-clients.yml"; then
+        echo "    injected value reached column 0" >&2
+        return 1
+    fi
+    assert_contains "$(cat "$(authelia_dir "$root")/oidc-clients.yml")" "client_name: 'signalk app'" \
+        "the first client_name must win"
+}
+
+test_rendered_registration_is_structurally_intact() {
+    new_device; local root="$DEV_ROOT"
+    write_client "$root" "signalk" "sekrit-one"
+    merge_on "$root" > /dev/null
+
+    # The PEM is re-indented into a YAML literal block; a wrong indent produces a
+    # file Authelia cannot parse, which no substring assertion would notice.
+    local rendered="$(authelia_dir "$root")/oidc-clients.yml"
+    grep -q '^      - key: |$' "$rendered" || {
+        echo "    jwks literal block header missing" >&2; return 1; }
+    grep -qE '^          -----BEGIN PRIVATE KEY-----$' "$rendered" || {
+        echo "    PEM head not indented into the literal block" >&2; return 1; }
+    grep -qE '^          -----END PRIVATE KEY-----$' "$rendered" || {
+        echo "    PEM tail lost its indentation" >&2; return 1; }
+    return 0
+}
+
 test_registration_is_not_world_readable() {
     new_device; local root="$DEV_ROOT"
     write_client "$root" "signalk" "sekrit-one"
     merge_on "$root" > /dev/null
 
     local mode
-    mode="$(stat -f '%Lp' "$(authelia_dir "$root")/oidc-clients.yml" 2>/dev/null \
-        || stat -c '%a' "$(authelia_dir "$root")/oidc-clients.yml")"
+    mode="$(stat -c '%a' "$(authelia_dir "$root")/oidc-clients.yml" 2>/dev/null \
+        || stat -f '%Lp' "$(authelia_dir "$root")/oidc-clients.yml")"
     assert_eq "$mode" "600" "registration holds secret hashes and must stay 0600"
 }
 
@@ -464,6 +569,106 @@ test_reload_reports_missing_data_root() {
     out="$(run_reload "$root" 2>&1)" && rc=0 || rc=$?
     assert_eq "$rc" "1" "missing env.defaults must fail loudly" || return 1
     assert_contains "$out" "CONTAINER_DATA_ROOT" "error must name the missing variable"
+}
+
+test_reload_retries_after_a_failed_restart() {
+    new_device; local root="$DEV_ROOT"
+    write_client "$root" "signalk" "sekrit-one"
+
+    DOCKER_STUB_RESTART_RC=1 run_reload "$root" > /dev/null 2>&1 || true
+    : > "$root/docker.log"
+
+    # The registration on disk is new but Authelia never picked it up. Reporting
+    # "already current" here would leave the rotated secret unapplied forever —
+    # issue #201 through the mechanism meant to close it.
+    run_reload "$root" > /dev/null
+    assert_contains "$(cat "$root/docker.log")" "restart authelia" \
+        "a restart that failed must be retried on the next run"
+}
+
+test_reload_picks_up_a_snippet_written_during_the_run() {
+    new_device; local root="$DEV_ROOT"
+    write_client "$root" "signalk" "sekrit-one"
+
+    # The path unit stops watching while the tool runs, so a write that lands
+    # mid-run leaves no event behind. The stub adds a second client the first
+    # time Authelia is restarted, standing in for that race.
+    cat > "$root/stub-bin/docker" << STUB
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >> "\${DOCKER_STUB_LOG}"
+case "\$1" in
+    run)
+        for arg in "\$@"; do
+            case "\$prev" in -e) envname="\$arg" ;; esac
+            prev="\$arg"
+        done
+        printf 'Digest: \$pbkdf2-sha512\$fake\$%s\n' "\${HALOS_OIDC_PW:-none}"
+        ;;
+    inspect) printf 'true\n' ;;
+    restart)
+        if [ ! -e "$root/raced" ]; then
+            touch "$root/raced"
+            mkdir -p "$root/var/lib/container-apps/grafana/data"
+            printf 'sekrit-two\n' > "$root/var/lib/container-apps/grafana/data/oidc-secret"
+            cat > "$root/etc/halos/oidc-clients.d/grafana.yml" << SNIP
+client_id: grafana
+client_secret_file: $root/var/lib/container-apps/grafana/data/oidc-secret
+redirect_uris:
+  - 'https://\\\${HALOS_DOMAIN}/callback'
+SNIP
+        fi
+        ;;
+    *) exit 1 ;;
+esac
+STUB
+    chmod 755 "$root/stub-bin/docker"
+
+    run_reload "$root" > /dev/null
+    assert_contains "$(cat "$(authelia_dir "$root")/oidc-clients.yml")" "client_id: grafana" \
+        "a snippet written while the tool ran must not be lost"
+}
+
+test_reload_force_reapplies_unchanged_inputs() {
+    new_device; local root="$DEV_ROOT"
+    write_client "$root" "signalk" "sekrit-one"
+    run_reload "$root" > /dev/null
+    : > "$root/docker.log"
+
+    run_reload "$root" --force > /dev/null
+    assert_contains "$(cat "$root/docker.log")" "restart authelia" \
+        "--force must re-apply even when the inputs are unchanged"
+}
+
+test_reload_ignores_an_inherited_data_root() {
+    new_device; local root="$DEV_ROOT"
+    write_client "$root" "signalk" "sekrit-one"
+    run_reload "$root" > /dev/null
+
+    local rendered="$(authelia_dir "$root")/oidc-clients.yml"
+    local before; before="$(cat "$rendered")"
+
+    # CONTAINER_DATA_ROOT is exported into every container-app service
+    # environment. An inherited value must never decide where the registration
+    # goes — env.defaults is the only source.
+    local rc
+    CONTAINER_DATA_ROOT="$root/tmp/elsewhere" run_reload "$root" > /dev/null 2>&1 && rc=0 || rc=$?
+    assert_eq "$(cat "$rendered")" "$before" "inherited data root must not redirect the registration" || return 1
+    if [ -e "$root/tmp/elsewhere" ]; then
+        echo "    tool wrote to the inherited path" >&2
+        return 1
+    fi
+    return 0
+}
+
+test_reload_secret_never_reaches_the_command_line() {
+    new_device; local root="$DEV_ROOT"
+    write_client "$root" "signalk" "sekrit-one"
+    run_reload "$root" > /dev/null
+
+    # /proc/<pid>/cmdline is world-readable; the plaintext travels in the
+    # environment instead.
+    assert_not_contains "$(cat "$root/docker.log")" "sekrit-one" \
+        "plaintext client secret must not appear in docker's arguments"
 }
 
 test_reload_fails_and_holds_authelia_when_hashing_fails() {
@@ -525,15 +730,26 @@ run_test test_new_snippet_triggers_rerender
 run_test test_hostname_change_triggers_rerender
 run_test test_missing_rendered_file_triggers_rerender
 run_test test_externally_modified_registration_triggers_rerender
-run_test test_render_version_bump_invalidates_stamp
 run_test test_hash_failure_keeps_the_previous_registration
 run_test test_hash_failure_is_retried_on_the_next_run
 run_test test_hash_failure_still_leaves_a_loadable_config
+run_test test_uncommitted_render_is_retried
+run_test test_library_change_invalidates_the_stamp
+run_test test_signing_material_change_triggers_rerender
+run_test test_empty_secret_file_is_not_registered
+run_test test_snippet_without_usable_redirect_uris_is_skipped
+run_test test_duplicate_key_cannot_escape_the_client_mapping
+run_test test_rendered_registration_is_structurally_intact
 run_test test_registration_is_not_world_readable
 run_test test_reload_writes_where_authelia_reads
 run_test test_reload_restarts_authelia_when_registration_changed
 run_test test_reload_without_changes_leaves_authelia_alone
 run_test test_reload_reports_missing_data_root
+run_test test_reload_retries_after_a_failed_restart
+run_test test_reload_picks_up_a_snippet_written_during_the_run
+run_test test_reload_force_reapplies_unchanged_inputs
+run_test test_reload_ignores_an_inherited_data_root
+run_test test_reload_secret_never_reaches_the_command_line
 run_test test_reload_fails_and_holds_authelia_when_hashing_fails
 run_test test_reload_fails_when_restart_fails
 run_test test_reload_skips_restart_when_authelia_not_running

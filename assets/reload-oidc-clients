@@ -3,23 +3,32 @@
 # restart Authelia when the result changed.
 #
 # Run by halos-oidc-clients-reload.path whenever a snippet appears or changes,
-# and usable by hand: /usr/bin/reload-oidc-clients
+# once after each stack start, and by hand: /usr/bin/reload-oidc-clients
+#
+#   --force   re-render and restart even when the inputs are unchanged
 
 set -e
 
 PACKAGE_NAME="halos-core-containers"
 
-# Test seam: prefixes every absolute path below so the tool can run against a
-# scratch layout. Empty in production.
-HALOS_OIDC_ROOT="${HALOS_OIDC_ROOT:-}"
+HALOS_OIDC_FORCE=0
+case "${1:-}" in
+    --force) HALOS_OIDC_FORCE=1 ;;
+    "") ;;
+    *) echo "Usage: reload-oidc-clients [--force]" >&2; exit 2 ;;
+esac
 
-ETC_DIR="${HALOS_OIDC_ROOT}/etc/container-apps/${PACKAGE_NAME}"
-LIB_DIR="${HALOS_OIDC_ROOT}/usr/lib/${PACKAGE_NAME}"
-OIDC_CLIENTS_DIR="${HALOS_OIDC_ROOT}/etc/halos/oidc-clients.d"
+# Per-path overrides, matching the convention halos-manage-certs uses: each one
+# names a single thing and production paths stay literal in the source.
+ETC_DIR="${HALOS_ETC_DIR:-/etc/container-apps/${PACKAGE_NAME}}"
+LIB_DIR="${HALOS_LIB_DIR:-/usr/lib/${PACKAGE_NAME}}"
+OIDC_CLIENTS_DIR="${HALOS_OIDC_CLIENTS_DIR:-/etc/halos/oidc-clients.d}"
 
-# CONTAINER_DATA_ROOT comes from the env files postinst writes, the same
-# source docker-compose.yml resolves its bind mounts from. Reconstructing it
-# here is what put the registration outside the mounted volume for months.
+# CONTAINER_DATA_ROOT must come from the env files postinst writes — the same
+# source docker-compose.yml resolves its bind mounts from. It is exported into
+# every container-app service environment, so an inherited value has to be
+# cleared first or it would satisfy the check below while pointing elsewhere.
+unset CONTAINER_DATA_ROOT
 set -a
 [ -f "${ETC_DIR}/env.defaults" ] && . "${ETC_DIR}/env.defaults"
 [ -f "${ETC_DIR}/env" ] && . "${ETC_DIR}/env"
@@ -33,6 +42,7 @@ fi
 AUTHELIA_DATA="${CONTAINER_DATA_ROOT}/authelia"
 AUTHELIA_OIDC_FILE="${AUTHELIA_DATA}/oidc-clients.yml"
 AUTHELIA_SECRETS_FILE="${AUTHELIA_DATA}/secrets.env"
+HOSTNAMES_SNAPSHOT="${AUTHELIA_DATA}/hostnames.snapshot"
 
 if [ ! -f "${AUTHELIA_SECRETS_FILE}" ]; then
     echo "ERROR: Authelia secrets not found at ${AUTHELIA_SECRETS_FILE}. Start halos-core-containers first." >&2
@@ -40,35 +50,77 @@ if [ ! -f "${AUTHELIA_SECRETS_FILE}" ]; then
 fi
 . "${AUTHELIA_SECRETS_FILE}"
 
+if [ ! -f "${AUTHELIA_DATA}/oidc_private_key.pem" ]; then
+    echo "ERROR: Authelia signing key not found at ${AUTHELIA_DATA}/oidc_private_key.pem." >&2
+    exit 1
+fi
 OIDC_PRIVATE_KEY=$(cat "${AUTHELIA_DATA}/oidc_private_key.pem")
 
-# Load the hostname list — redirect_uris are emitted for every configured DNS
-# hostname (IPs excluded). Falls back to ${hostname}.local on missing config.
 # shellcheck source=assets/lib-hostnames.sh
 . "${LIB_DIR}/lib-hostnames.sh"
 halos_load_hostnames
+
+# redirect_uris must stay in lockstep with the session.cookies block in
+# configuration.yml, which only prestart rewrites. Expanding against a hostname
+# list this Authelia was never configured for would register a redirect_uri
+# whose hostname has no cookie domain — a login that starts there cannot finish.
+if [ -f "${HOSTNAMES_SNAPSHOT}" ]; then
+    mapfile -t _live_hostnames < <(halos_dns_hostnames)
+    mapfile -t HALOS_HOSTNAMES_DNS < "${HOSTNAMES_SNAPSHOT}"
+    if [ "${_live_hostnames[*]}" != "${HALOS_HOSTNAMES_DNS[*]}" ]; then
+        echo "NOTE: the hostname list changed since the stack started." \
+             "Restart halos-core-containers.service to apply it to Authelia."
+    fi
+fi
 
 # shellcheck source=assets/lib-oidc-clients.sh
 . "${LIB_DIR}/lib-oidc-clients.sh"
 
 echo "Reloading OIDC clients for $(halos_canonical_hostname)..."
-halos_oidc_merge_clients
 
-if [ "${HALOS_OIDC_CHANGED}" -eq 0 ]; then
-    echo "Authelia left running - nothing to apply"
-    exit 0
-fi
+restart_authelia() {
+    # `docker restart`, not `docker compose restart`: compose resolves the
+    # variables in docker-compose.yml, which only the systemd unit's
+    # EnvironmentFile supplies, and fails outright when run standalone.
+    local state
+    state=$(docker inspect -f '{{.State.Running}}' authelia 2>/dev/null || echo "absent")
+    if [ "${state}" != "true" ]; then
+        echo "Authelia is not running (${state}) - new registration applies at its next start"
+        return 0
+    fi
+    echo "Restarting Authelia..."
+    docker restart authelia
+}
 
-# `docker restart`, not `docker compose restart`: compose resolves the
-# variables in docker-compose.yml, which only the systemd unit's
-# EnvironmentFile supplies, and fails outright when run standalone.
-authelia_state=$(docker inspect -f '{{.State.Running}}' authelia 2>/dev/null || echo "absent")
-if [ "${authelia_state}" != "true" ]; then
-    echo "Authelia is not running (${authelia_state}) - new registration applies at its next start"
-    exit 0
-fi
+# The path unit stops watching for the duration of this run and re-arms without
+# re-checking, so a snippet written while we were working leaves no event behind.
+# Re-merging until nothing changes picks those up; an unchanged merge costs a
+# digest and no container.
+rounds=0
+max_rounds=3
+while :; do
+    rounds=$((rounds + 1))
+    HALOS_OIDC_FORCE="${HALOS_OIDC_FORCE}" halos_oidc_merge_clients
 
-echo "Restarting Authelia..."
-docker restart authelia
+    if [ "${HALOS_OIDC_CHANGED}" -eq 0 ]; then
+        if [ "$rounds" -eq 1 ]; then
+            echo "OIDC client registration already current - Authelia left running"
+        fi
+        break
+    fi
+
+    restart_authelia
+    # Only now is the render live, so only now may it be recorded.
+    halos_oidc_commit
+
+    # --force applies once; leaving it set would re-render every round forever.
+    HALOS_OIDC_FORCE=0
+
+    if [ "$rounds" -ge "$max_rounds" ]; then
+        echo "WARNING: snippets kept changing across ${max_rounds} merges - stopping." \
+             "Run reload-oidc-clients again once they settle." >&2
+        break
+    fi
+done
 
 echo "OIDC clients reloaded successfully"
