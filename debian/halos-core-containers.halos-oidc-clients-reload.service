@@ -1,0 +1,13 @@
+[Unit]
+Description=Merge OIDC client snippets into Authelia's client registration
+Documentation=https://github.com/halos-org/halos-core-containers/blob/main/docs/SSO_ARCHITECTURE.md
+
+[Service]
+# Type=oneshot WITHOUT RemainAfterExit: the path unit starts this on every
+# snippet change, and `start` on a RemainAfterExit=yes oneshot already in
+# active(exited) is a documented no-op — the same trap halos-manage-certs
+# documents for its timer.
+Type=oneshot
+ExecStart=/usr/bin/reload-oidc-clients
+StandardOutput=journal
+StandardError=journal

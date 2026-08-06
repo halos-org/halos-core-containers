@@ -105,3 +105,4 @@ override_dh_installsystemd:
 	dh_installsystemd
 	dh_installsystemd --name=halos-manage-certs
 	dh_installsystemd --name=halos-resolve-domain
+	dh_installsystemd --name=halos-oidc-clients-reload
