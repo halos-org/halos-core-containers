@@ -57,6 +57,8 @@ override_dh_auto_install:
 		debian/$(PKG_NAME)/usr/lib/$(PKG_NAME)/lib-hostnames.sh
 	install -D -m 644 assets/lib-ca.sh \
 		debian/$(PKG_NAME)/usr/lib/$(PKG_NAME)/lib-ca.sh
+	install -D -m 644 assets/lib-oidc-clients.sh \
+		debian/$(PKG_NAME)/usr/lib/$(PKG_NAME)/lib-oidc-clients.sh
 
 	# Install cert-management script. Executable but not under /usr/bin —
 	# it's a systemd-invoked helper (halos-manage-certs.service oneshot),

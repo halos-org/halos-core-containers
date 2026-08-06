@@ -1,157 +1,74 @@
 #!/bin/bash
-# Reload OIDC clients for Authelia
-# Called automatically when files in /etc/halos/oidc-clients.d/ change
-# Can also be run manually: /usr/bin/reload-oidc-clients
+# Merge /etc/halos/oidc-clients.d/ into Authelia's client registration and
+# restart Authelia when the result changed.
+#
+# Run by halos-oidc-clients-reload.path whenever a snippet appears or changes,
+# and usable by hand: /usr/bin/reload-oidc-clients
 
 set -e
 
 PACKAGE_NAME="halos-core-containers"
-ETC_DIR="/etc/container-apps/${PACKAGE_NAME}"
-CONTAINER_DATA_ROOT="/var/lib/container-apps/${PACKAGE_NAME}"
+
+# Test seam: prefixes every absolute path below so the tool can run against a
+# scratch layout. Empty in production.
+HALOS_OIDC_ROOT="${HALOS_OIDC_ROOT:-}"
+
+ETC_DIR="${HALOS_OIDC_ROOT}/etc/container-apps/${PACKAGE_NAME}"
+LIB_DIR="${HALOS_OIDC_ROOT}/usr/lib/${PACKAGE_NAME}"
+OIDC_CLIENTS_DIR="${HALOS_OIDC_ROOT}/etc/halos/oidc-clients.d"
+
+# CONTAINER_DATA_ROOT comes from the env files postinst writes, the same
+# source docker-compose.yml resolves its bind mounts from. Reconstructing it
+# here is what put the registration outside the mounted volume for months.
+set -a
+[ -f "${ETC_DIR}/env.defaults" ] && . "${ETC_DIR}/env.defaults"
+[ -f "${ETC_DIR}/env" ] && . "${ETC_DIR}/env"
+set +a
+
+if [ -z "${CONTAINER_DATA_ROOT:-}" ]; then
+    echo "ERROR: CONTAINER_DATA_ROOT is not set - ${ETC_DIR}/env.defaults missing or empty." >&2
+    exit 1
+fi
+
 AUTHELIA_DATA="${CONTAINER_DATA_ROOT}/authelia"
-OIDC_CLIENTS_DIR="/etc/halos/oidc-clients.d"
 AUTHELIA_OIDC_FILE="${AUTHELIA_DATA}/oidc-clients.yml"
 AUTHELIA_SECRETS_FILE="${AUTHELIA_DATA}/secrets.env"
 
-# Load secrets
 if [ ! -f "${AUTHELIA_SECRETS_FILE}" ]; then
-    echo "ERROR: Authelia secrets not found. Run halos-core-containers first."
+    echo "ERROR: Authelia secrets not found at ${AUTHELIA_SECRETS_FILE}. Start halos-core-containers first." >&2
     exit 1
 fi
 . "${AUTHELIA_SECRETS_FILE}"
 
 OIDC_PRIVATE_KEY=$(cat "${AUTHELIA_DATA}/oidc_private_key.pem")
 
-# Load hostname list from /etc/halos/hostnames.conf — drives placeholder
-# expansion in OIDC client snippets so that redirect_uris are emitted for
-# every configured DNS hostname (IPs excluded). Falls back to
-# ${hostname}.local on missing/invalid config.
-LIB_HOSTNAMES="/usr/lib/halos-core-containers/lib-hostnames.sh"
-# shellcheck source=/dev/null
-. "$LIB_HOSTNAMES"
+# Load the hostname list — redirect_uris are emitted for every configured DNS
+# hostname (IPs excluded). Falls back to ${hostname}.local on missing config.
+# shellcheck source=assets/lib-hostnames.sh
+. "${LIB_DIR}/lib-hostnames.sh"
 halos_load_hostnames
-HALOS_DOMAIN="$(halos_canonical_hostname)"
 
-echo "Reloading OIDC clients for ${HALOS_DOMAIN}..."
+# shellcheck source=assets/lib-oidc-clients.sh
+. "${LIB_DIR}/lib-oidc-clients.sh"
 
-# Hash a plaintext secret using Authelia's CLI
-hash_client_secret() {
-    local plaintext="$1"
-    local hash_output
-    hash_output=$(docker run --rm authelia/authelia:4.39 authelia crypto hash generate pbkdf2 \
-        --variant sha512 \
-        --password "${plaintext}" 2>/dev/null)
-    if [ $? -ne 0 ]; then
-        return 1
-    fi
-    echo "$hash_output" | grep 'Digest:' | sed 's/Digest: //'
-}
+echo "Reloading OIDC clients for $(halos_canonical_hostname)..."
+halos_oidc_merge_clients
 
-# Merge OIDC client snippets
-client_count=0
-clients_yaml=""
-
-for snippet in "${OIDC_CLIENTS_DIR}"/*.yml; do
-    [ -e "$snippet" ] || continue
-    snippet_name=$(basename "$snippet")
-    echo "  Processing: ${snippet_name}"
-
-    # Read fields from snippet
-    client_id=$(grep -E '^client_id:' "$snippet" | sed 's/client_id:[[:space:]]*//' | tr -d "'\"")
-    client_name=$(grep -E '^client_name:' "$snippet" | sed 's/client_name:[[:space:]]*//' | tr -d "'\"")
-    client_secret_file=$(grep -E '^client_secret_file:' "$snippet" | sed 's/client_secret_file:[[:space:]]*//' | tr -d "'\"")
-    consent_mode=$(grep -E '^consent_mode:' "$snippet" | sed 's/consent_mode:[[:space:]]*//' | tr -d "'\"")
-    token_auth_method=$(grep -E '^token_endpoint_auth_method:' "$snippet" | sed 's/token_endpoint_auth_method:[[:space:]]*//' | tr -d "'\"")
-
-    [ -z "$client_id" ] && { echo "  WARNING: Skipping ${snippet_name} - missing client_id"; continue; }
-
-    # Read and hash client secret
-    client_secret_hash=""
-    if [ -n "$client_secret_file" ] && [ -f "$client_secret_file" ]; then
-        plaintext_secret=$(cat "$client_secret_file")
-        if ! client_secret_hash=$(hash_client_secret "$plaintext_secret"); then
-            echo "  ERROR: Failed to hash client secret for ${snippet_name}"
-            continue
-        fi
-    else
-        echo "  WARNING: Skipping ${snippet_name} - client_secret_file not found: ${client_secret_file}"
-        continue
-    fi
-
-    # Extract redirect_uris and expand ${HALOS_DOMAIN} placeholder via
-    # the shared helper so prestart.sh and reload-oidc-clients stay in
-    # lockstep on multi-hostname behavior.
-    redirect_uris=""
-    in_redirect=false
-    while IFS= read -r line; do
-        if echo "$line" | grep -qE '^redirect_uris:'; then
-            in_redirect=true
-            continue
-        fi
-        if $in_redirect; then
-            if echo "$line" | grep -qE '^[[:space:]]+-'; then
-                uri=$(echo "$line" | sed "s/^[[:space:]]*-[[:space:]]*//" | tr -d "'\"")
-                while IFS= read -r expanded_uri; do
-                    [ -z "$expanded_uri" ] && continue
-                    redirect_uris="${redirect_uris}          - '${expanded_uri}'\n"
-                done < <(halos_expand_oidc_redirect_uri "$uri")
-            elif echo "$line" | grep -qE '^[a-z_]+:'; then
-                break
-            fi
-        fi
-    done < "$snippet"
-
-    # Extract scopes
-    scopes_line=$(grep -E '^scopes:' "$snippet")
-    scopes=""
-    if echo "$scopes_line" | grep -qE '\[.*\]'; then
-        scopes=$(echo "$scopes_line" | sed 's/scopes:[[:space:]]*//')
-    else
-        scopes="[openid, profile, email]"
-    fi
-
-    # Build client YAML
-    clients_yaml="${clients_yaml}      - client_id: ${client_id}
-        client_name: '${client_name:-${client_id}}'
-        client_secret: '${client_secret_hash}'
-        public: false
-        authorization_policy: one_factor
-        redirect_uris:
-$(echo -e "${redirect_uris}" | sed '/^$/d')
-        scopes: ${scopes}
-        consent_mode: ${consent_mode:-implicit}
-        token_endpoint_auth_method: ${token_auth_method:-client_secret_post}
-"
-    client_count=$((client_count + 1))
-done
-
-if [ $client_count -eq 0 ]; then
-    echo "  No OIDC client snippets found - OIDC will be disabled"
-    cat > "${AUTHELIA_OIDC_FILE}" << 'EOF'
-# Authelia OIDC Configuration - No clients configured
-EOF
-else
-    echo "  Merged ${client_count} OIDC client(s)"
-    indented_key=$(echo "${OIDC_PRIVATE_KEY}" | awk 'NR==1 {print} NR>1 {print "          " $0}')
-
-    cat > "${AUTHELIA_OIDC_FILE}" << EOF
-# Authelia OIDC Configuration
-# Auto-generated by reload-oidc-clients
-identity_providers:
-  oidc:
-    hmac_secret: '${OIDC_HMAC_SECRET}'
-    jwks:
-      - key: |
-          ${indented_key}
-    clients:
-${clients_yaml}
-EOF
+if [ "${HALOS_OIDC_CHANGED}" -eq 0 ]; then
+    echo "Authelia left running - nothing to apply"
+    exit 0
 fi
-chmod 600 "${AUTHELIA_OIDC_FILE}"
 
-# Restart Authelia to pick up new configuration
+# `docker restart`, not `docker compose restart`: compose resolves the
+# variables in docker-compose.yml, which only the systemd unit's
+# EnvironmentFile supplies, and fails outright when run standalone.
+authelia_state=$(docker inspect -f '{{.State.Running}}' authelia 2>/dev/null || echo "absent")
+if [ "${authelia_state}" != "true" ]; then
+    echo "Authelia is not running (${authelia_state}) - new registration applies at its next start"
+    exit 0
+fi
+
 echo "Restarting Authelia..."
-cd /var/lib/container-apps/${PACKAGE_NAME}
-docker compose restart authelia
+docker restart authelia
 
 echo "OIDC clients reloaded successfully"
