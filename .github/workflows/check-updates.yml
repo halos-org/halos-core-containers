@@ -11,9 +11,10 @@ concurrency:
 
 jobs:
   check-updates:
-    uses: halos-org/shared-workflows/.github/workflows/check-image-updates.yml@main
+    uses: halos-org/shared-workflows/.github/workflows/check-image-updates.yml@fix/halos-tag-split
     with:
       compose-pattern: docker-compose.yml
+      dry-run: true
     permissions:
       contents: write
       pull-requests: write
