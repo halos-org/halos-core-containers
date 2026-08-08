@@ -42,6 +42,15 @@ fi
 . "$LIB_HOSTNAMES"
 halos_load_hostnames
 
+# The OIDC client merger is shared with /usr/bin/reload-oidc-clients so a
+# boot-time render and a hot reload can never disagree.
+LIB_OIDC_CLIENTS="/usr/lib/halos-core-containers/lib-oidc-clients.sh"
+if [ ! -f "$LIB_OIDC_CLIENTS" ]; then
+    LIB_OIDC_CLIENTS="${SCRIPT_DIR}/assets/lib-oidc-clients.sh"
+fi
+# shellcheck source=assets/lib-oidc-clients.sh
+. "$LIB_OIDC_CLIENTS"
+
 HOSTNAME_SHORT=$(hostname -s 2>/dev/null || hostname | cut -d. -f1)
 
 # Write common runtime environment
@@ -326,134 +335,11 @@ fi
 . "${AUTHELIA_SECRETS_FILE}"
 OIDC_PRIVATE_KEY=$(cat "${AUTHELIA_DATA}/oidc_private_key.pem")
 
-# Hash a plaintext secret using Authelia's CLI
-hash_client_secret() {
-    local plaintext="$1"
-    local hash_output
-    hash_output=$(docker run --rm authelia/authelia:4.39 authelia crypto hash generate pbkdf2 \
-        --variant sha512 \
-        --password "${plaintext}" 2>/dev/null)
-    if [ $? -ne 0 ]; then
-        return 1
-    fi
-    echo "$hash_output" | grep 'Digest:' | sed 's/Digest: //'
-}
-
-# Merge OIDC client snippets from .d directory
-merge_oidc_clients() {
-    echo "Merging OIDC client snippets..."
-    local client_count=0
-    local clients_yaml=""
-
-    for snippet in "${OIDC_CLIENTS_DIR}"/*.yml; do
-        [ -e "$snippet" ] || continue
-        local snippet_name=$(basename "$snippet")
-        echo "  Processing: ${snippet_name}"
-
-        # Read fields from snippet
-        local client_id=$(grep -E '^client_id:' "$snippet" | sed 's/client_id:[[:space:]]*//' | tr -d "'\"")
-        local client_name=$(grep -E '^client_name:' "$snippet" | sed 's/client_name:[[:space:]]*//' | tr -d "'\"")
-        local client_secret_file=$(grep -E '^client_secret_file:' "$snippet" | sed 's/client_secret_file:[[:space:]]*//' | tr -d "'\"")
-        local consent_mode=$(grep -E '^consent_mode:' "$snippet" | sed 's/consent_mode:[[:space:]]*//' | tr -d "'\"")
-        local token_auth_method=$(grep -E '^token_endpoint_auth_method:' "$snippet" | sed 's/token_endpoint_auth_method:[[:space:]]*//' | tr -d "'\"")
-
-        [ -z "$client_id" ] && { echo "  WARNING: Skipping ${snippet_name} - missing client_id"; continue; }
-
-        # Read and hash client secret
-        local client_secret_hash=""
-        if [ -n "$client_secret_file" ] && [ -f "$client_secret_file" ]; then
-            local plaintext_secret=$(cat "$client_secret_file")
-            if ! client_secret_hash=$(hash_client_secret "$plaintext_secret"); then
-                echo "  ERROR: Failed to hash client secret for ${snippet_name}"
-                continue
-            fi
-        else
-            echo "  WARNING: Skipping ${snippet_name} - client_secret_file not found: ${client_secret_file}"
-            continue
-        fi
-
-        # Extract redirect_uris and expand ${HALOS_DOMAIN} placeholder
-        # to one URI per configured DNS hostname (IPs excluded — see
-        # halos_expand_oidc_redirect_uri in lib-hostnames.sh).
-        local redirect_uris=""
-        local in_redirect=false
-        while IFS= read -r line; do
-            if echo "$line" | grep -qE '^redirect_uris:'; then
-                in_redirect=true
-                continue
-            fi
-            if $in_redirect; then
-                if echo "$line" | grep -qE '^[[:space:]]+-'; then
-                    local uri
-                    uri=$(echo "$line" | sed "s/^[[:space:]]*-[[:space:]]*//" | tr -d "'\"")
-                    while IFS= read -r expanded_uri; do
-                        [ -z "$expanded_uri" ] && continue
-                        redirect_uris="${redirect_uris}          - '${expanded_uri}'\n"
-                    done < <(halos_expand_oidc_redirect_uri "$uri")
-                elif echo "$line" | grep -qE '^[a-z_]+:'; then
-                    break
-                fi
-            fi
-        done < "$snippet"
-
-        # Extract scopes
-        local scopes_line=$(grep -E '^scopes:' "$snippet")
-        local scopes=""
-        if echo "$scopes_line" | grep -qE '\[.*\]'; then
-            scopes=$(echo "$scopes_line" | sed 's/scopes:[[:space:]]*//')
-        else
-            scopes="[openid, profile, email]"
-        fi
-
-        # Build client YAML
-        clients_yaml="${clients_yaml}      - client_id: ${client_id}
-        client_name: '${client_name:-${client_id}}'
-        client_secret: '${client_secret_hash}'
-        public: false
-        authorization_policy: one_factor
-        redirect_uris:
-$(echo -e "${redirect_uris}" | sed '/^$/d')
-        scopes: ${scopes}
-        consent_mode: ${consent_mode:-implicit}
-        token_endpoint_auth_method: ${token_auth_method:-client_secret_post}
-"
-        client_count=$((client_count + 1))
-    done
-
-    if [ $client_count -eq 0 ]; then
-        echo "  No OIDC client snippets found - OIDC will be disabled"
-        cat > "${AUTHELIA_OIDC_FILE}" << 'EOF'
-# Authelia OIDC Configuration - No clients configured
-EOF
-    else
-        echo "  Merged ${client_count} OIDC client(s)"
-        local indented_key
-        indented_key=$(echo "${OIDC_PRIVATE_KEY}" | awk 'NR==1 {print} NR>1 {print "          " $0}')
-
-        cat > "${AUTHELIA_OIDC_FILE}" << EOF
-# Authelia OIDC Configuration
-# Auto-generated by halos-core-containers prestart
-identity_providers:
-  oidc:
-    hmac_secret: '${OIDC_HMAC_SECRET}'
-    jwks:
-      - key: |
-          ${indented_key}
-    clients:
-${clients_yaml}
-EOF
-    fi
-    chmod 600 "${AUTHELIA_OIDC_FILE}"
-}
-
 # Process Authelia configuration template
 process_authelia_template() {
     echo "Processing Authelia configuration template..."
     local template
     template=$(cat "${AUTHELIA_TEMPLATE}")
-
-    local indented_key
-    indented_key=$(echo "${OIDC_PRIVATE_KEY}" | awk 'NR==1 {print} NR>1 {print "          " $0}')
 
     # Build session.cookies block — one entry per configured multi-label
     # DNS hostname. Two exclusions:
@@ -517,23 +403,39 @@ process_authelia_template() {
     template="${template/${cookies_marker}/${cookies_block}}"
 
     template="${template//\$\{SESSION_SECRET\}/${SESSION_SECRET}}"
-    template="${template//\$\{OIDC_HMAC_SECRET\}/${OIDC_HMAC_SECRET}}"
     template="${template//\$\{STORAGE_ENCRYPTION_KEY\}/${STORAGE_ENCRYPTION_KEY}}"
     template="${template//\$\{RESET_PASSWORD_JWT_SECRET\}/${RESET_PASSWORD_JWT_SECRET}}"
     template="${template//\$\{REDIS_PASSWORD\}/${REDIS_PASSWORD}}"
     template="${template//\$\{HALOS_DOMAIN\}/${HALOS_DOMAIN}}"
 
-    echo "${template}" | awk -v key="${indented_key}" '
-        /\$\{OIDC_PRIVATE_KEY\}/ { sub(/\$\{OIDC_PRIVATE_KEY\}/, key) }
-        { print }
-    ' > "${AUTHELIA_CONFIG_FILE}"
+    printf '%s\n' "${template}" > "${AUTHELIA_CONFIG_FILE}"
 
     chmod 600 "${AUTHELIA_CONFIG_FILE}"
+
+    # The hostname list this config's session.cookies block was built from.
+    # reload-oidc-clients expands redirect_uris against it rather than against a
+    # live resolution, so the two halves of Authelia's config cannot disagree
+    # between stack starts.
+    halos_dns_hostnames > "${AUTHELIA_DATA}/hostnames.snapshot"
+
     echo "Authelia configuration generated"
 }
 
 process_authelia_template
-merge_oidc_clients
+# A failed merge keeps the previous registration and is not worth refusing to
+# boot over: the stack coming up with a stale client list beats the stack not
+# coming up at all. halos-oidc-clients-reload.service runs after this unit
+# reaches active and retries, so the failure is not terminal.
+if halos_oidc_merge_clients; then
+    if [ "${HALOS_OIDC_CHANGED}" -eq 1 ]; then
+        # Nothing to apply separately: the containers start immediately after.
+        halos_oidc_commit
+    else
+        echo "OIDC client registration already current"
+    fi
+else
+    echo "WARNING: OIDC client merge failed - Authelia keeps its previous client registration" >&2
+fi
 
 # Write Redis password to runtime environment for docker-compose
 echo "REDIS_PASSWORD=${REDIS_PASSWORD}" >> "${RUNTIME_ENV}"

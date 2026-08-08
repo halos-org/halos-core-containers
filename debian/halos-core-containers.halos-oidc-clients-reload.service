@@ -1,0 +1,30 @@
+[Unit]
+Description=Merge OIDC client snippets into Authelia's client registration
+Documentation=https://github.com/halos-org/halos-core-containers/blob/main/docs/SSO_ARCHITECTURE.md
+After=halos-core-containers.service
+# Path-triggered: a burst of snippet writes (a bulk app install) would otherwise
+# trip the default 5-starts-in-10s limit, and systemd propagates that by putting
+# the .path unit itself into failed state — the trigger would silently cease.
+StartLimitIntervalSec=0
+
+[Service]
+# Type=oneshot WITHOUT RemainAfterExit: the path unit starts this on every
+# snippet change, and `start` on a RemainAfterExit=yes oneshot already in
+# active(exited) is a documented no-op — the same trap halos-manage-certs
+# documents for its timer.
+Type=oneshot
+# Type=oneshot disables the start timeout by default. ExecStart shells out to a
+# container per client plus a restart, none of which time out on their own, so
+# an unresponsive docker daemon would wedge this unit forever — and a wedged
+# unit leaves the .path in `running`, where it watches nothing.
+TimeoutStartSec=300
+ExecStart=/usr/bin/reload-oidc-clients
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+# Also run once per stack start, not only on the path trigger: prestart's own
+# merge can fail transiently, and on a device whose only OIDC client is the core
+# stack's own Homarr snippet nothing else would ever write to the watched
+# directory to retry it. A run with nothing to do costs one digest.
+WantedBy=halos-core-containers.service

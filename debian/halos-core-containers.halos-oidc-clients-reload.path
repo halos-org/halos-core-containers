@@ -1,0 +1,17 @@
+[Unit]
+Description=Watch OIDC client snippets for changes
+Documentation=https://github.com/halos-org/halos-core-containers/blob/main/docs/SSO_ARCHITECTURE.md
+# Only meaningful while the stack is up: the reload restarts the running
+# Authelia container, and a stack that is down re-merges in prestart anyway.
+PartOf=halos-core-containers.service
+After=halos-core-containers.service
+
+[Path]
+# App packages write their snippet on every app start, so this fires far more
+# often than the registration actually changes. reload-oidc-clients compares
+# the merge inputs against what it rendered last and returns without touching
+# Authelia when they match — without that, every app start would bounce SSO.
+PathModified=/etc/halos/oidc-clients.d
+
+[Install]
+WantedBy=halos-core-containers.service

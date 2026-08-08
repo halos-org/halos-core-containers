@@ -143,10 +143,56 @@ empty to disable it, or point it at a scratch state file.
 that drop OIDC client snippets into `/etc/halos/oidc-clients.d/` should
 write `redirect_uris` entries with the literal token `${HALOS_DOMAIN}`
 preserved (use `<<'EOF'` heredoc, or escape as `\${HALOS_DOMAIN}` in an
-unquoted heredoc). The merger in `prestart.sh` and `reload-oidc-clients`
-expands the placeholder to one URI per configured DNS hostname; entries
-without the placeholder pass through unchanged but only authenticate via
-the literal hostname they hard-code.
+unquoted heredoc). The merger expands the placeholder to one URI per
+configured DNS hostname; entries without the placeholder pass through
+unchanged but only authenticate via the literal hostname they hard-code.
+
+**OIDC client registration contract.** The merger lives once, in
+`/usr/lib/halos-core-containers/lib-oidc-clients.sh`, sourced by both
+`prestart.sh` (boot-time render) and `/usr/bin/reload-oidc-clients` (hot
+reload). Don't reimplement snippet parsing or rendering in either caller:
+two copies drift, and the drift stays invisible until a login breaks (#200).
+
+Callers set `OIDC_CLIENTS_DIR`, `AUTHELIA_OIDC_FILE`, `OIDC_HMAC_SECRET` and
+`OIDC_PRIVATE_KEY`, source `lib-hostnames.sh` first, and then:
+
+- call `halos_oidc_merge_clients`, which renders and reports through
+  `HALOS_OIDC_CHANGED`,
+- **apply** the render — start the container, or restart a running one,
+- call `halos_oidc_commit`, which records the merge.
+
+The commit is separate on purpose. The stamp means "these inputs are live",
+not "this file was written": recording it before the apply succeeds would
+make a failed restart look current forever, which is #201 again.
+
+`halos-oidc-clients-reload.path` watches `/etc/halos/oidc-clients.d/`, and
+the same one-shot also runs once per stack start so a failed boot-time merge
+is retried. **The trigger is a snippet write** — secret files are not
+watched, so an OIDC app package must rewrite its snippet after rotating its
+secret (writing it on every app start, as the generated prestarts do, is
+enough). The merge digests its inputs (snippet text, referenced secret file
+contents, hostname list, signing material, and both shell libraries) and
+returns early when they match, which is what keeps a routine app restart
+from bouncing Authelia.
+
+The libraries are digested rather than versioned by hand: the rendered
+output depends on the renderer *and* on `halos_expand_oidc_redirect_uri` in
+`lib-hostnames.sh`, so an upgrade that changes either re-renders on its own.
+Don't reintroduce a version constant for this — a hand-maintained invariant
+in a comment is what a stale-registration bug is made of.
+
+`redirect_uris` are expanded against `hostnames.snapshot`, the hostname list
+prestart used for the `session.cookies` block, not against a live
+resolution. The two halves of Authelia's config are written by different
+processes at different times; pinning the reload to the snapshot is what
+stops them disagreeing. A hostname change therefore applies at the next
+stack start, when both halves are rewritten together.
+
+**Test seams.** `HALOS_ETC_DIR`, `HALOS_LIB_DIR` and `HALOS_OIDC_CLIENTS_DIR`
+override individual paths, following `halos-manage-certs`. `CONTAINER_DATA_ROOT`
+is deliberately *not* one of them: it is unset before the env files are
+sourced, so an inherited value (every container-app service has one exported)
+cannot decide where the registration lands.
 
 ## Building
 

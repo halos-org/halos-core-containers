@@ -4,9 +4,9 @@
 # Run from repo root:
 #   bash tests/test-prestart-loader-contract.sh
 #
-# AGENTS.md (Hostname-list contract): "The shared loader at
-# /usr/lib/halos-core-containers/lib-hostnames.sh is sourced by prestart.sh
-# ... do not duplicate parsing logic — extend the loader instead."
+# AGENTS.md: the shared loaders under /usr/lib/halos-core-containers/
+# (lib-hostnames.sh, lib-oidc-clients.sh) are sourced by prestart.sh — "do not
+# duplicate parsing logic — extend the loader instead."
 #
 # prestart.sh runs under `set -e`, so any halos_* / _halos_* function it
 # invokes without the loader sourced aborts the script at container start
@@ -22,8 +22,9 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 PRESTART="$REPO_ROOT/prestart.sh"
 LIB="$REPO_ROOT/assets/lib-hostnames.sh"
+LIB_OIDC="$REPO_ROOT/assets/lib-oidc-clients.sh"
 
-for f in "$PRESTART" "$LIB"; do
+for f in "$PRESTART" "$LIB" "$LIB_OIDC"; do
     [ -f "$f" ] || { echo "missing fixture: $f" >&2; exit 2; }
 done
 
@@ -42,13 +43,19 @@ FAILS=0
 #    other dot-sources (env files, the Authelia secrets file) and comment
 #    mentions of the lib, so a loose check passes even when the source is gone.
 noncomment="$(sed 's/#.*//' "$PRESTART")"
-if printf '%s\n' "$noncomment" | grep -Eq 'LIB_HOSTNAMES=.*lib-hostnames\.sh' \
-   && printf '%s\n' "$noncomment" | grep -Eq '^\s*\.\s+"\$\{?LIB_HOSTNAMES\}?"'; then
-    printf '%sPASS%s prestart.sh sources the lib-hostnames.sh loader\n' "$GREEN" "$RESET"
-else
-    printf '%sFAIL%s prestart.sh does not source the lib-hostnames.sh loader\n' "$RED" "$RESET"
-    FAILS=$((FAILS + 1))
-fi
+check_sources_loader() {
+    local var="$1" lib="$2"
+    local label="${lib//\\/}"
+    if printf '%s\n' "$noncomment" | grep -Eq "${var}=.*${lib}" \
+       && printf '%s\n' "$noncomment" | grep -Eq "^\\s*\\.\\s+\"\\\$\\{?${var}\\}?\""; then
+        printf '%sPASS%s prestart.sh sources the %s loader\n' "$GREEN" "$RESET" "$label"
+    else
+        printf '%sFAIL%s prestart.sh does not source the %s loader\n' "$RED" "$RESET" "$label"
+        FAILS=$((FAILS + 1))
+    fi
+}
+check_sources_loader LIB_HOSTNAMES 'lib-hostnames\.sh'
+check_sources_loader LIB_OIDC_CLIENTS 'lib-oidc-clients\.sh'
 
 # 2. Every loader symbol prestart.sh *invokes* must be defined by the loader.
 #    Collect candidate invocations: halos_* / _halos_* tokens that appear as a
@@ -58,9 +65,11 @@ fi
 mapfile -t called < <(grep -oE '\b_?halos_[a-z_]+' "$PRESTART" \
     | grep -vE '^HALOS_' | sort -u)
 
-# Source the loader in this shell so declare -F can see its functions.
+# Source the loaders in this shell so declare -F can see their functions.
 # shellcheck source=/dev/null
 . "$LIB"
+# shellcheck source=/dev/null
+. "$LIB_OIDC"
 
 missing=()
 for fn in "${called[@]}"; do
@@ -77,6 +86,34 @@ if [ "${#called[@]}" -gt 0 ] && [ "${#missing[@]}" -eq 0 ]; then
 else
     printf '%sFAIL%s prestart.sh invokes loader symbols not defined by lib-hostnames.sh: %s\n' \
         "$RED" "$RESET" "${missing[*]:-<none collected>}"
+    FAILS=$((FAILS + 1))
+fi
+
+# 3. lib-oidc-clients.sh reads four caller globals. prestart runs under set -e
+#    but not set -u, so a dropped assignment is not an error — it renders the
+#    registration to the wrong path and Authelia boots with a stale client list,
+#    which is bug #200's class on the other caller.
+for global in OIDC_CLIENTS_DIR AUTHELIA_OIDC_FILE OIDC_HMAC_SECRET OIDC_PRIVATE_KEY; do
+    if printf '%s\n' "$noncomment" | grep -Eq "^\\s*${global}="; then
+        printf '%sPASS%s prestart.sh sets %s before merging\n' "$GREEN" "$RESET" "$global"
+    else
+        printf '%sFAIL%s prestart.sh never assigns %s\n' "$RED" "$RESET" "$global"
+        FAILS=$((FAILS + 1))
+    fi
+done
+
+# 4. The merge call must stay guarded. Bare under set -e, a transient hashing
+#    failure aborts prestart and the whole stack fails to start — the outcome
+#    the tolerated-failure path exists to avoid.
+if printf '%s\n' "$noncomment" | grep -Eq '^\s*(if\s+)?halos_oidc_merge_clients\s*(;|$|\|\|)'; then
+    if printf '%s\n' "$noncomment" | grep -Eq '^\s*halos_oidc_merge_clients\s*$'; then
+        printf '%sFAIL%s prestart.sh calls halos_oidc_merge_clients unguarded under set -e\n' "$RED" "$RESET"
+        FAILS=$((FAILS + 1))
+    else
+        printf '%sPASS%s prestart.sh tolerates a failed merge\n' "$GREEN" "$RESET"
+    fi
+else
+    printf '%sFAIL%s prestart.sh does not call halos_oidc_merge_clients\n' "$RED" "$RESET"
     FAILS=$((FAILS + 1))
 fi
 

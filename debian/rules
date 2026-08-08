@@ -57,6 +57,8 @@ override_dh_auto_install:
 		debian/$(PKG_NAME)/usr/lib/$(PKG_NAME)/lib-hostnames.sh
 	install -D -m 644 assets/lib-ca.sh \
 		debian/$(PKG_NAME)/usr/lib/$(PKG_NAME)/lib-ca.sh
+	install -D -m 644 assets/lib-oidc-clients.sh \
+		debian/$(PKG_NAME)/usr/lib/$(PKG_NAME)/lib-oidc-clients.sh
 
 	# Install cert-management script. Executable but not under /usr/bin —
 	# it's a systemd-invoked helper (halos-manage-certs.service oneshot),
@@ -103,3 +105,11 @@ override_dh_installsystemd:
 	dh_installsystemd
 	dh_installsystemd --name=halos-manage-certs
 	dh_installsystemd --name=halos-resolve-domain
+	# The reload one-shot is enabled but not started here. dh's generated
+	# postinst calls deb-systemd-invoke without --no-block, so starting it at
+	# configure time runs a full merge — a container per client plus an Authelia
+	# restart — while dpkg holds its lock, and an unresponsive docker daemon
+	# would hang apt. Its WantedBy=halos-core-containers.service pulls it in when
+	# the stack starts moments later anyway.
+	dh_installsystemd --name=halos-oidc-clients-reload --no-start halos-oidc-clients-reload.service
+	dh_installsystemd --name=halos-oidc-clients-reload halos-oidc-clients-reload.path
