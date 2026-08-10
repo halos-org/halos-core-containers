@@ -5,6 +5,21 @@ Documentation=https://github.com/halos-org/halos-core-containers/blob/main/docs/
 # Authelia container, and a stack that is down re-merges in prestart anyway.
 PartOf=halos-core-containers.service
 After=halos-core-containers.service
+# A path unit's default dependencies order it Before=paths.target, and an
+# ordinary service is ordered after basic.target, which is after paths.target.
+# Together with the After= above that closes an ordering cycle through the whole
+# core stack, and systemd resolves a cycle by deleting an arbitrary job from it.
+# That job can be a Requires= of halos-core-containers.service, which leaves the
+# stack with no job at all and nothing reporting why (#208). Dropping the After=
+# would break the cycle too — the triggered service carries its own After= on the
+# stack — but then PartOf's restart of this watcher is unordered against the
+# stack it watches. Opting out of the default dependencies instead loses three
+# things: the paths.target edge, which is the point, and the sysinit and shutdown
+# ordering, both restored below.
+DefaultDependencies=no
+After=sysinit.target
+Conflicts=shutdown.target
+Before=shutdown.target
 
 [Path]
 # App packages write their snippet on every app start, so this fires far more
