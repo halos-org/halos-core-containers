@@ -23,6 +23,11 @@
 #    for a release (#208). The unit files are the only place this invariant
 #    lives; systemd-analyze verify does not see it, because a cycle exists only
 #    in a boot transaction.
+#
+# 4. A failed Requires= dependency does not fail the consumer — it deletes the
+#    consumer's start job, which ends inactive with Result=success and never
+#    appears in `systemctl --failed`. The core stack spent a release in that
+#    state (#212). The two input oneshots must stay Wants=.
 
 set -u
 set -o pipefail
@@ -90,7 +95,34 @@ for unit in "$REPO_ROOT"/debian/${PKG}.*.path; do
     fi
 done
 
-# 4. Shared shell libraries reach /usr/lib/<pkg>/, where both callers source
+# 4. The stack requires the container runtime and only wants the units that
+#    produce its inputs. The loops above glob debian/${PKG}.*.{service,timer,path}
+#    and so never see the main unit, which is why this names the file.
+STACK_UNIT="$REPO_ROOT/debian/${PKG}.service"
+stack_requires=$(grep -h '^Requires=' "$STACK_UNIT" | cut -d= -f2-)
+stack_wants=$(grep -h '^Wants=' "$STACK_UNIT" | cut -d= -f2-)
+stack_after=$(grep -h '^After=' "$STACK_UNIT" | cut -d= -f2-)
+
+for oneshot in halos-manage-certs.service halos-resolve-domain.service; do
+    if [[ " $stack_requires " == *" $oneshot "* ]]; then
+        fail "${PKG}.service Requires=${oneshot}; a failed run would cancel the stack's start job silently (#212)"
+    elif [[ " $stack_wants " != *" $oneshot "* ]]; then
+        fail "${PKG}.service neither Requires= nor Wants= ${oneshot}; it would never be pulled in"
+    else
+        pass "${PKG}.service wants ${oneshot} rather than requiring it"
+    fi
+    if [[ " $stack_after " != *" $oneshot "* ]]; then
+        fail "${PKG}.service is not ordered After=${oneshot}; the input may not exist yet"
+    fi
+done
+
+if [[ " $stack_requires " == *" docker.service "* ]]; then
+    pass "${PKG}.service still requires docker.service"
+else
+    fail "${PKG}.service does not Requires=docker.service; without the runtime there is nothing to run"
+fi
+
+# 5. Shared shell libraries reach /usr/lib/<pkg>/, where both callers source
 #    them from. A library that ships only inside the app directory would break
 #    /usr/bin/reload-oidc-clients while leaving prestart working.
 for lib in "$REPO_ROOT"/assets/lib-*.sh; do
