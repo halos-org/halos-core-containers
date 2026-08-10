@@ -1,8 +1,10 @@
 #!/usr/bin/env bash
 #
 # Pre-commit hook to prevent direct debian/changelog edits.
-# Changelog updates must go through ./run bumpversion which uses dch
-# to ensure proper RFC 2822 date formatting.
+# The changelog a *release* ships is generated at build time by
+# .github/scripts/generate-changelog.sh, so a hand-edit here never reaches a
+# released .deb. It does still version local ./run build packages, which is how
+# a dev build came to deploy as a downgrade (docs/solutions/2026-05-31-...).
 #
 # Bypass: SKIP_CHANGELOG_CHECK=1 git commit ...
 
@@ -10,7 +12,7 @@ set -o errexit
 set -o pipefail
 set -o nounset
 
-# Allow bypass for ./run bumpversion (via env var)
+# Manual override.
 if [[ "${SKIP_CHANGELOG_CHECK:-}" == "1" ]]; then
     exit 0
 fi
@@ -24,15 +26,21 @@ if [[ -n "$CHANGELOG_FILES" ]]; then
     echo "Staged changelog files:"
     echo "$CHANGELOG_FILES" | sed 's/^/  /'
     echo ""
-    echo "Why: Manual changelog edits often have RFC 2822 date formatting errors"
-    echo "(wrong weekday for date). The dch tool handles this correctly."
+    echo "Why: the changelog a release ships is written at build time by"
+    echo ".github/scripts/generate-changelog.sh, so editing the tracked file"
+    echo "changes nothing a released package carries. It does set the version of"
+    echo "local './run build' .debs, which is how a dev build once deployed as a"
+    echo "downgrade and evicted its dependents."
     echo ""
-    echo "Solution: Use './run bumpversion [patch|minor|major]' which:"
-    echo "  1. Updates VERSION file"
-    echo "  2. Uses dch to update debian/changelog with correct dates"
-    echo "  3. Commits the changes"
+    echo "Solution: drop the edit."
+    echo "  git restore --staged --worktree debian/changelog"
     echo ""
-    echo "If you need to bypass this check (e.g., fixing a changelog):"
+    echo "To open a new release cycle instead, run"
+    echo "'./run bumpversion [patch|minor|major]', which bumps VERSION and"
+    echo "commits that change -- it does not touch the changelog."
+    echo ""
+    echo "To override anyway (e.g. deliberately raising a local build's version"
+    echo "so it installs over a released one):"
     echo "  SKIP_CHANGELOG_CHECK=1 git commit ..."
     echo ""
     exit 1
