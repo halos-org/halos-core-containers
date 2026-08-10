@@ -16,6 +16,13 @@
 # 2. The watched directory is named independently in the path unit, the tool
 #    and postinst. If they drift, the trigger fires on a directory nobody
 #    writes to and nothing reports it.
+#
+# 3. A path unit's default dependencies order it Before=paths.target, so an
+#    After= on an ordinary service closes an ordering cycle. systemd resolves
+#    that by deleting an arbitrary job, which took the whole core stack down
+#    for a release (#208). The unit files are the only place this invariant
+#    lives; systemd-analyze verify does not see it, because a cycle exists only
+#    in a boot transaction.
 
 set -u
 set -o pipefail
@@ -65,7 +72,25 @@ else
     fail "postinst does not create ${watch_path}; the watcher would have nothing to watch"
 fi
 
-# 3. Shared shell libraries reach /usr/lib/<pkg>/, where both callers source
+# 3. A path unit ordered after a service must opt out of the default
+#    dependencies, and must restore the shutdown ordering that opt-out drops.
+for unit in "$REPO_ROOT"/debian/${PKG}.*.path; do
+    [ -e "$unit" ] || continue
+    base="$(basename "$unit")"
+    grep -qE '^After=.*\.service' "$unit" || continue
+
+    missing=""
+    for directive in "DefaultDependencies=no" "Conflicts=shutdown.target" "Before=shutdown.target"; do
+        grep -qxF "$directive" "$unit" || missing="${missing} ${directive}"
+    done
+    if [ -z "$missing" ]; then
+        pass "${base} is ordered after a service and opts out of the default dependencies"
+    else
+        fail "${base} declares After= on a service without:${missing}; that is the #208 boot cycle"
+    fi
+done
+
+# 4. Shared shell libraries reach /usr/lib/<pkg>/, where both callers source
 #    them from. A library that ships only inside the app directory would break
 #    /usr/bin/reload-oidc-clients while leaving prestart working.
 for lib in "$REPO_ROOT"/assets/lib-*.sh; do
