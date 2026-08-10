@@ -444,11 +444,23 @@ echo "REDIS_PASSWORD=${REDIS_PASSWORD}" >> "${RUNTIME_ENV}"
 if [ ! -f "${AUTHELIA_DATA}/users_database.yml" ]; then
     echo "Creating initial admin user..."
     DEFAULT_PASSWORD="halos"
-    INITIAL_HASH=$(docker run --rm authelia/authelia:4.39 authelia crypto hash generate argon2 \
-        --password "${DEFAULT_PASSWORD}" 2>/dev/null | grep 'Digest:' | sed 's/Digest: //')
+    # Plaintext through the environment, not argv: /proc/<pid>/cmdline is
+    # world-readable, and this is the pattern _halos_oidc_hash_secret uses for
+    # the same CLI. Docker's own output is kept: without it an unreachable
+    # registry, a rate-limited pull and a stopped daemon all reduce to one
+    # generic line, with the whole stack down and nothing to attribute it to.
+    if ! HASH_OUTPUT=$(HALOS_ADMIN_PW="${DEFAULT_PASSWORD}" docker run --rm \
+        -e HALOS_ADMIN_PW "${HALOS_OIDC_AUTHELIA_IMAGE}" \
+        sh -c 'authelia crypto hash generate argon2 --password "$HALOS_ADMIN_PW"' 2>&1); then
+        echo "ERROR: could not generate the initial password hash" >&2
+        printf 'docker: %s\n' "${HASH_OUTPUT}" >&2
+        exit 1
+    fi
+    INITIAL_HASH=$(printf '%s\n' "${HASH_OUTPUT}" | grep 'Digest:' | sed 's/Digest: //')
 
     if [ -z "${INITIAL_HASH}" ]; then
-        echo "ERROR: Failed to generate password hash"
+        echo "ERROR: password hashing produced no digest" >&2
+        printf 'docker: %s\n' "${HASH_OUTPUT}" >&2
         exit 1
     fi
 

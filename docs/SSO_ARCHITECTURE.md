@@ -58,7 +58,7 @@ Traefik is the central routing component. It receives all incoming HTTP/HTTPS re
 
 ### Authelia Identity Provider
 
-**Image**: `authelia/authelia:4.39`
+**Image**: pinned in `docker-compose.yml` (and mirrored by `HALOS_OIDC_AUTHELIA_IMAGE` in `assets/lib-oidc-clients.sh`, which is what prestart and the reload tool hash with)
 **Network**: `halos-proxy-network` (external)
 **Ports**: None exposed (accessed via Traefik)
 
