@@ -58,6 +58,22 @@ cat > "${RUNTIME_ENV}" << EOF
 HOSTNAME=${HOSTNAME_SHORT}
 EOF
 
+# An empty HALOS_DOMAIN renders into the OIDC issuer, Authelia's cookie domain
+# and Traefik's redirects, producing a stack that looks healthy and whose every
+# login fails. Since the resolver is only wanted by this unit, not required, the
+# stack now starts even when it failed, so refuse here instead.
+#
+# The resolver's file is checked, not just the variable: /run is tmpfs so a
+# stale domain.env cannot outlive a reboot, but an in-place upgrade can leave a
+# pre-upgrade HALOS_DOMAIN in runtime.env, which must not satisfy this.
+#
+# Both units retry with backoff, so a transient resolver failure heals without
+# help: the resolver republishes and a later retry here picks it up.
+if [ ! -s /run/halos/domain.env ] || [ -z "${HALOS_DOMAIN:-}" ]; then
+    echo "HALOS_DOMAIN_UNSET: halos-resolve-domain.service has not published /run/halos/domain.env" >&2
+    exit 1
+fi
+
 echo "HaLOS Core Containers prestart"
 echo "Domain: ${HALOS_DOMAIN}"
 
