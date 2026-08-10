@@ -11,14 +11,16 @@ OnBootSec=15min
 # Re-check every 24h. Well below HALOS_CA_LEAF_RENEW_THRESHOLD_DAYS (60d),
 # so even fortnightly-rebooted devices get multiple chances to renew.
 OnUnitActiveSec=24h
-# Spread fleet-wide hits over a 1h window to avoid synchronized renewal
-# storms.
+# Spread the hits from every device with this package over a 1h window to
+# avoid synchronized renewal storms. Note this delays the first post-boot
+# check to 15-75 min, which is also how long a boot-time cert failure goes
+# unrepaired.
 RandomizedDelaySec=1h
 # Deliberately NOT Persistent=true: Raspberry Pi has no RTC, so first
 # boot starts with a fake-hwclock timestamp (often 1970). With Persistent
 # set, the post-NTP clock jump from 1970 → 2026 would trigger a catch-up
 # fire storm of "missed" runs. Boot-time renewal still happens because
-# halos-core-containers.service Requires= halos-manage-certs.service —
+# halos-core-containers.service pulls this unit in via Wants= —
 # losing Persistent only means a device powered off across a scheduled
 # fire waits for the next OnUnitActiveSec=24h tick (≤24h post-boot) to
 # re-check, which is well below the 60-day renewal threshold.

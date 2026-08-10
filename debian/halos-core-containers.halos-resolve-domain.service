@@ -7,14 +7,22 @@ Before=halos-core-containers.service
 [Service]
 # Type=oneshot WITHOUT RemainAfterExit so an explicit consumer (re)start
 # re-runs the resolver and republishes /run/halos/domain.env, picking up admin
-# edits to /etc/halos/hostnames.conf. A consumer's Requires= pulls in this
-# (inactive) oneshot when the consumer is started; the successful exit
-# satisfies Requires= even after the unit goes naturally inactive. (A systemd
-# Restart=on-failure auto-restart of the consumer does not re-pull Requires=
-# deps, so it does not re-run this — domain.env simply retains its last value.)
+# edits to /etc/halos/hostnames.conf. A consumer's Wants= pulls in this
+# (inactive) oneshot when the consumer is started, and a successfully-exited
+# oneshot still satisfies the ordering after it goes naturally inactive. (A
+# systemd auto-restart of the consumer does not re-pull its dependencies, so it
+# does not re-run this — domain.env simply retains its last value.)
 # Same reasoning as halos-manage-certs.service.
 Type=oneshot
 ExecStart=/usr/lib/halos-core-containers/halos-resolve-domain
+# The consumer refuses to start without the domain this publishes, and an
+# auto-restart of the consumer will not re-run this unit. Retry here instead, so
+# a transient failure heals on its own: the resolver republishes, and the
+# consumer's next backed-off retry finds the file.
+Restart=on-failure
+RestartSec=30
+RestartSteps=4
+RestartMaxDelaySec=300
 StandardOutput=journal
 StandardError=journal
 

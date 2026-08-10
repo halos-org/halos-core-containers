@@ -58,6 +58,22 @@ cat > "${RUNTIME_ENV}" << EOF
 HOSTNAME=${HOSTNAME_SHORT}
 EOF
 
+# An empty HALOS_DOMAIN renders into the OIDC issuer, Authelia's cookie domain
+# and Traefik's redirects, producing a stack that looks healthy and whose every
+# login fails. Since the resolver is only wanted by this unit, not required, the
+# stack now starts even when it failed, so refuse here instead.
+#
+# The resolver's file is checked, not just the variable: /run is tmpfs so a
+# stale domain.env cannot outlive a reboot, but an in-place upgrade can leave a
+# pre-upgrade HALOS_DOMAIN in runtime.env, which must not satisfy this.
+#
+# Both units retry with backoff, so a transient resolver failure heals without
+# help: the resolver republishes and a later retry here picks it up.
+if [ ! -s /run/halos/domain.env ] || [ -z "${HALOS_DOMAIN:-}" ]; then
+    echo "HALOS_DOMAIN_UNSET: halos-resolve-domain.service has not published /run/halos/domain.env" >&2
+    exit 1
+fi
+
 echo "HaLOS Core Containers prestart"
 echo "Domain: ${HALOS_DOMAIN}"
 
@@ -83,6 +99,25 @@ if [ ! -f "${ACME_FILE}" ]; then
 fi
 
 # TLS leaf + CA artifacts are provisioned by a separate unit; see docs/CERTS.md.
+
+# The ca-download sidecar bind-mounts the adoption sentinel as a *file*, and
+# halos-manage-certs.service is what normally creates it — but the stack only
+# Wants= that unit now, so a failed cert run would let Docker create a directory
+# at the mount source instead. lib-ca.sh then repairs the host path on its next
+# successful run while the running sidecar keeps the removed inode mounted, so
+# adoption is never recorded and the CN-refresh gate can orphan a trust anchor
+# the operator already installed. Guarantee the file here, with the same call
+# the cert manager makes: an existing sentinel is preserved verbatim, and with
+# no auto-CA yet the value is the documented fail-safe ("adopted", CN frozen).
+LIB_CA="/usr/lib/halos-core-containers/lib-ca.sh"
+if [ ! -f "$LIB_CA" ]; then
+    LIB_CA="${SCRIPT_DIR}/assets/lib-ca.sh"
+fi
+# shellcheck source=assets/lib-ca.sh
+. "$LIB_CA"
+AUTO_CA_DIR="${CONTAINER_DATA_ROOT}/${PACKAGE_NAME}/certs/ca"
+halos_ca_adoption_init "${AUTO_CA_DIR}/adoption" "${AUTO_CA_DIR}/ca.crt" 0
+chown "${HALOS_CA_DOWNLOAD_UID}:${HALOS_CA_DOWNLOAD_UID}" "${AUTO_CA_DIR}/adoption" 2>/dev/null || true
 
 # Dynamic Configuration Directory
 DYNAMIC_DIR="/etc/halos/traefik-dynamic.d"

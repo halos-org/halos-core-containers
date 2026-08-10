@@ -1,7 +1,18 @@
 [Unit]
 Description=HaLOS Core Containers (Traefik, Authelia, Homarr)
 After=docker.service halos-manage-certs.service halos-resolve-domain.service
-Requires=docker.service halos-manage-certs.service halos-resolve-domain.service
+# docker is the runtime -- without it there is nothing to run, so it stays a
+# hard requirement. The two oneshots produce inputs instead, and Requires= on
+# them is a trap: a failed dependency cancels this unit's start job, so the unit
+# never runs ExecStart and ends inactive with Result=success, invisible to
+# `systemctl --failed`, while the whole web stack is absent. Nothing re-queues
+# it either -- measured: a dependency with Restart=on-failure that retries to
+# success does not bring the cancelled consumer back (#212). Wants= keeps the
+# ordering, lets the stack start, and leaves the failure visible on the unit
+# that actually failed; prestart refuses to run without the domain the resolver
+# publishes, so a genuinely missing input still fails loudly here.
+Requires=docker.service
+Wants=halos-manage-certs.service halos-resolve-domain.service
 
 [Service]
 Type=simple
@@ -17,7 +28,16 @@ EnvironmentFile=-/run/halos/domain.env
 ExecStart=docker compose up
 ExecStop=docker compose down
 Restart=on-failure
+# Back the retries off rather than capping them. A start limit would put the
+# unit in `failed` and leave it there -- nothing here re-queues it, so a cause
+# that clears later (the network arrives, the docker daemon finishes
+# restarting) would need a human, on a device that is usually headless. Retry
+# forever instead, but stop hammering: 10 s, doubling to a 5 min ceiling, so a
+# stack that cannot start logs its reason a few times an hour rather than every
+# 10 s, and comes up on its own the moment the cause goes away.
 RestartSec=10
+RestartSteps=6
+RestartMaxDelaySec=300
 StandardOutput=journal
 StandardError=journal
 

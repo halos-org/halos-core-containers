@@ -8,11 +8,12 @@ Before=halos-core-containers.service
 # Type=oneshot WITHOUT RemainAfterExit so the timer's `start` action
 # actually re-runs ExecStart on each fire. systemd's `start` on a
 # RemainAfterExit=yes oneshot in active(exited) state is a documented
-# no-op, which would silently break periodic renewal. The Requires= +
-# After= chain on halos-core-containers.service still gates correctly:
-# a successfully-exited oneshot satisfies Requires= even after it goes
-# naturally inactive (verified empirically — only failed exits drop
-# the consumer).
+# no-op, which would silently break periodic renewal. The ordering
+# against halos-core-containers.service still holds: a successfully-exited
+# oneshot satisfies After= even after it goes naturally inactive. The stack
+# only Wants= this unit, though, so a failed run no longer holds the stack
+# back — it starts with whatever TLS material exists and the timer below is
+# what repairs it (#212).
 Type=oneshot
 ExecStart=/usr/lib/halos-core-containers/halos-manage-certs
 StandardOutput=journal
