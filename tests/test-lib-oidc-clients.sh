@@ -238,6 +238,98 @@ test_merge_renders_clients() {
     assert_not_contains "$out" '${HALOS_DOMAIN}' "placeholder left unexpanded"
 }
 
+# Name a leftover the way _halos_oidc_render's mktemp template does, so the
+# fixture tracks the renderer rather than the sweep's own glob.
+plant_stale_render() {
+    local root="$1"
+    local stale="$(authelia_dir "$root")/oidc-clients.yml.tmp.AbC123"
+    echo "hmac_secret: 'leaked-from-a-killed-render'" > "$stale"
+    printf '%s' "$stale"
+}
+
+test_merge_sweeps_temp_render_from_a_killed_run() {
+    new_device; local root="$DEV_ROOT"
+    write_client "$root" "signalk" "sekrit-one"
+    local stale; stale="$(plant_stale_render "$root")"
+    # Siblings the sweep must not claim. SIGKILL leaves the lock behind too, and
+    # unlinking it while a flock is held lets a second merge run concurrently.
+    local lock="$(authelia_dir "$root")/oidc-clients.yml.lock"
+    local stamp="$(authelia_dir "$root")/oidc-clients.yml.stamp"
+    : > "$lock"; echo "planted" > "$stamp"
+
+    merge_on "$root" > /dev/null
+    [ ! -e "$stale" ] || { echo "    a killed run's temp render survived the merge"; return 1; }
+    [ -e "$lock" ] || { echo "    sweep unlinked the merge lock"; return 1; }
+    [ -e "$stamp" ] || { echo "    sweep unlinked the stamp"; return 1; }
+    assert_contains "$(cat "$(authelia_dir "$root")/oidc-clients.yml")" "client_id: signalk" \
+        "the render itself must still land"
+}
+
+# The library pins the hashing image to the tag docker-compose.yml runs, so a
+# device never fetches a second Authelia image. Nothing enforced that, and the
+# two drifted once already (#210): prestart pulled 4.39 while the stack ran
+# 4.39.19, so an unreachable registry took the whole stack down on first boot.
+test_hashing_image_matches_the_compose_pin() {
+    local lib_tag compose_tag
+    lib_tag=$(sed -n 's/^HALOS_OIDC_AUTHELIA_IMAGE="\(.*\)"$/\1/p' "$LIB_OIDC" | head -1)
+    compose_tag=$(sed -n 's/^[[:space:]]*image:[[:space:]]*\(authelia\/authelia:.*\)$/\1/p' \
+        "$REPO_ROOT/docker-compose.yml" | head -1)
+    assert_eq "$lib_tag" "$compose_tag" "the hashing image must be the tag the stack runs" || return 1
+
+    if grep -qE 'authelia/authelia:' "$REPO_ROOT/prestart.sh"; then
+        echo "    prestart.sh names an Authelia tag directly; it must use \$HALOS_OIDC_AUTHELIA_IMAGE"
+        return 1
+    fi
+}
+
+# The fixtures above name a leftover by hand, so they cannot see the renderer's
+# template drifting away from the sweep's glob — the sweep would then match
+# nothing a real killed run leaves. Pin the two to each other, and to the
+# siblings they must never claim.
+test_sweep_glob_matches_what_the_renderer_creates() {
+    local template sweep produced
+    template=$(sed -n 's/.*mktemp "${AUTHELIA_OIDC_FILE}\(\.[^"]*\)".*/\1/p' "$LIB_OIDC" | head -1)
+    sweep=$(sed -n 's/.*rm -f "${AUTHELIA_OIDC_FILE}"\(\.[^ ]*\).*/\1/p' "$LIB_OIDC" | head -1)
+    [ -n "$template" ] || { echo "    no mktemp template found in $LIB_OIDC"; return 1; }
+    [ -n "$sweep" ] || { echo "    no sweep pattern found in $LIB_OIDC"; return 1; }
+
+    produced="${template//XXXXXX/AbC123}"
+    # shellcheck disable=SC2254  # $sweep is a glob on purpose
+    case "$produced" in
+        $sweep) ;;
+        *) echo "    mktemp creates '${produced}' but the sweep looks for '${sweep}'"; return 1 ;;
+    esac
+    for sibling in .lock .stamp; do
+        # shellcheck disable=SC2254
+        case "$sibling" in
+            $sweep) echo "    the sweep pattern '${sweep}' also claims '${sibling}'"; return 1 ;;
+        esac
+    done
+}
+
+test_merge_sweeps_when_nothing_needs_rendering() {
+    new_device; local root="$DEV_ROOT"
+    write_client "$root" "signalk" "sekrit-one"
+    merge_on "$root" > /dev/null
+
+    # Inputs now match the stamp, so the merge short-circuits without rendering.
+    # A sweep that lived in the renderer would never run again on this device.
+    local stale; stale="$(plant_stale_render "$root")"
+    merge_on "$root" > /dev/null
+    [ ! -e "$stale" ] || { echo "    an unchanged merge left the temp render in place"; return 1; }
+}
+
+test_merge_sweeps_when_hashing_fails() {
+    new_device; local root="$DEV_ROOT"
+    write_client "$root" "signalk" "sekrit-one"
+    local stale; stale="$(plant_stale_render "$root")"
+
+    # Hashing failure is the registry-unreachable path, which is also the one
+    # most likely to have produced the leftover in the first place.
+    DOCKER_STUB_HASH_RC=1 merge_on "$root" > /dev/null 2>&1 || true
+    [ ! -e "$stale" ] || { echo "    a failed merge left the temp render in place"; return 1; }
+}
+
 test_merge_reports_change_on_first_render() {
     new_device; local root="$DEV_ROOT"
     write_client "$root" "signalk" "sekrit-one"
@@ -721,6 +813,11 @@ test_reload_aborts_without_authelia_secrets() {
 # ---------------------------------------------------------------------------
 
 run_test test_merge_renders_clients
+run_test test_merge_sweeps_temp_render_from_a_killed_run
+run_test test_hashing_image_matches_the_compose_pin
+run_test test_sweep_glob_matches_what_the_renderer_creates
+run_test test_merge_sweeps_when_nothing_needs_rendering
+run_test test_merge_sweeps_when_hashing_fails
 run_test test_merge_reports_change_on_first_render
 run_test test_merge_without_snippets_disables_oidc
 run_test test_merge_skips_snippet_without_secret_file

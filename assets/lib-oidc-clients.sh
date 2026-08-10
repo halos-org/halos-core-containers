@@ -206,10 +206,13 @@ $(echo -e "${redirect_uris}" | sed '/^$/d')
     fi
 
     local tmp_file
-    tmp_file=$(mktemp "${AUTHELIA_OIDC_FILE}.XXXXXX") || return 1
+    tmp_file=$(mktemp "${AUTHELIA_OIDC_FILE}.tmp.XXXXXX") || return 1
     # The temp file holds the HMAC secret and the signing key, and lives in the
-    # directory bind-mounted as Authelia's /config.
-    trap 'rm -f "$tmp_file"' RETURN
+    # directory bind-mounted as Authelia's /config. RETURN alone would leave it
+    # behind whenever the shell is killed rather than returning — a shutdown
+    # mid-merge, a start timeout — so the signals are trapped too. SIGKILL and
+    # power loss still escape; halos_oidc_merge_clients sweeps for those.
+    trap 'rm -f "$tmp_file"' RETURN INT TERM HUP
     chmod 600 "$tmp_file"
 
     # Writes are checked explicitly: this function runs as an `if` condition, so
@@ -289,6 +292,14 @@ halos_oidc_merge_clients() {
     local stamp_file="${AUTHELIA_OIDC_FILE}.stamp"
 
     _halos_oidc_lock
+
+    # Sweep temp renders a previous run could not clean up — killed by SIGKILL,
+    # or by power loss. They are mode 0600 but hold the HMAC secret and the
+    # signing key, in the directory bind-mounted as Authelia's /config. This
+    # runs under the lock and before the digest short-circuit below, so it
+    # covers every path out of the merge, including the ones that never render.
+    # The .tmp. infix keeps the pattern off .lock and .stamp.
+    rm -f "${AUTHELIA_OIDC_FILE}".tmp.*
 
     local input_digest output_digest
     input_digest="$(_halos_oidc_input_digest)"

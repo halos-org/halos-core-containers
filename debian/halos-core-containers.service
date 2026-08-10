@@ -27,6 +27,12 @@ EnvironmentFile=-/run/container-apps/halos-core-containers/runtime.env
 EnvironmentFile=-/run/halos/domain.env
 ExecStart=docker compose up
 ExecStop=docker compose down
+# Type=simple counts the unit as started once ExecStart forks, so this bounds
+# prestart.sh. On a first boot prestart generates a 4096-bit OIDC signing key
+# and runs Authelia's hashing container, which on a cold image cache means a
+# registry fetch first — none of that fits systemd's 90 s default, and the
+# timeout kills prestart mid-render.
+TimeoutStartSec=600
 Restart=on-failure
 # Back the retries off rather than capping them. A start limit would put the
 # unit in `failed` and leave it there -- nothing here re-queues it, so a cause
