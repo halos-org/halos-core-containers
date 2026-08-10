@@ -5,7 +5,7 @@
 #   bash tests/test-prestart-loader-contract.sh
 #
 # AGENTS.md: the shared loaders under /usr/lib/halos-core-containers/
-# (lib-hostnames.sh, lib-oidc-clients.sh) are sourced by prestart.sh — "do not
+# (lib-hostnames.sh, lib-oidc-clients.sh, lib-ca.sh) are sourced by prestart.sh — "do not
 # duplicate parsing logic — extend the loader instead."
 #
 # prestart.sh runs under `set -e`, so any halos_* / _halos_* function it
@@ -23,8 +23,9 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 PRESTART="$REPO_ROOT/prestart.sh"
 LIB="$REPO_ROOT/assets/lib-hostnames.sh"
 LIB_OIDC="$REPO_ROOT/assets/lib-oidc-clients.sh"
+LIB_CA="$REPO_ROOT/assets/lib-ca.sh"
 
-for f in "$PRESTART" "$LIB" "$LIB_OIDC"; do
+for f in "$PRESTART" "$LIB" "$LIB_OIDC" "$LIB_CA"; do
     [ -f "$f" ] || { echo "missing fixture: $f" >&2; exit 2; }
 done
 
@@ -56,6 +57,9 @@ check_sources_loader() {
 }
 check_sources_loader LIB_HOSTNAMES 'lib-hostnames\.sh'
 check_sources_loader LIB_OIDC_CLIENTS 'lib-oidc-clients\.sh'
+# prestart guarantees the ca-download adoption sentinel exists as a regular file
+# before compose binds it, using the cert manager's own initializer.
+check_sources_loader LIB_CA 'lib-ca\.sh'
 
 # 2. Every loader symbol prestart.sh *invokes* must be defined by the loader.
 #    Collect candidate invocations: halos_* / _halos_* tokens that appear as a
@@ -70,6 +74,8 @@ mapfile -t called < <(grep -oE '\b_?halos_[a-z_]+' "$PRESTART" \
 . "$LIB"
 # shellcheck source=/dev/null
 . "$LIB_OIDC"
+# shellcheck source=/dev/null
+. "$LIB_CA"
 
 missing=()
 for fn in "${called[@]}"; do
@@ -84,7 +90,7 @@ if [ "${#called[@]}" -gt 0 ] && [ "${#missing[@]}" -eq 0 ]; then
     printf '%sPASS%s all %d loader symbols invoked by prestart.sh are defined: %s\n' \
         "$GREEN" "$RESET" "${#called[@]}" "${called[*]}"
 else
-    printf '%sFAIL%s prestart.sh invokes loader symbols not defined by lib-hostnames.sh: %s\n' \
+    printf '%sFAIL%s prestart.sh invokes loader symbols no sourced loader defines: %s\n' \
         "$RED" "$RESET" "${missing[*]:-<none collected>}"
     FAILS=$((FAILS + 1))
 fi
