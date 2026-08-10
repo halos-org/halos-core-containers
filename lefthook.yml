@@ -10,4 +10,4 @@ pre-commit:
 
     check-changelog:
       run: .github/scripts/check-changelog-edits.sh
-      fail_text: "Direct debian/changelog edits are not allowed. Use './run bumpversion' instead."
+      fail_text: "Direct debian/changelog edits are not allowed. See error above for details."

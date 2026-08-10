@@ -35,6 +35,20 @@ The `VERSION` file is a **meta-version for git tags only**. It does NOT control 
 - Controls when new releases are triggered
 - Bump this when you want a new release bundle
 
+### Changelog
+
+`debian/changelog` is **CI-generated**, not maintained by hand. The entry a
+release ships is written at build time by
+`.github/scripts/generate-changelog.sh`, and a pre-commit hook rejects edits to
+the tracked file. `./run bumpversion` bumps `VERSION` and commits it — it does
+not run `dch`, unlike the repos the workspace changelog policy describes.
+
+The tracked file is not inert, though: `tools/build-all.sh` regenerates it only
+when it is absent, so a local `./run build` stamps its `.deb` from the committed
+placeholder. That is why a dev build installs as a downgrade and can evict its
+dependents — see
+[docs/solutions/2026-05-31-deploy-downgrade-evicts-dependent-packages.md](docs/solutions/2026-05-31-deploy-downgrade-evicts-dependent-packages.md).
+
 ### App Package Versions
 
 Individual apps in `apps/` have their own versions in `metadata.yaml`. These are independent of the VERSION file.
