@@ -1,6 +1,6 @@
 services:
   traefik:
-    image: traefik:v3.7.1
+    image: traefik:v3.7.11
     container_name: traefik
     init: true
     restart: unless-stopped
@@ -38,7 +38,7 @@ services:
         tag: "{{.Name}}"
 
   authelia:
-    image: authelia/authelia:4.39.19
+    image: authelia/authelia:4.39.20
     container_name: authelia
     init: true
     restart: unless-stopped
@@ -77,7 +77,7 @@ services:
         tag: "{{.Name}}"
 
   authelia-valkey:
-    image: valkey/valkey:9.0.4-alpine
+    image: valkey/valkey:9.1.1-alpine
     container_name: authelia-valkey
     init: true
     restart: unless-stopped
@@ -102,7 +102,7 @@ services:
         tag: "{{.Name}}"
 
   homarr:
-    image: ghcr.io/hatlabs/homarr:v1.60.0-halos.1
+    image: ghcr.io/hatlabs/homarr:v1.60.0-halos.2
     container_name: homarr
     init: true
     restart: unless-stopped
