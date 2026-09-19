@@ -452,7 +452,9 @@ generate_mdns_services() {
         return 0
     fi
 
-    mkdir -p "${AVAHI_SERVICES_DIR}"
+    if ! mkdir -p "${AVAHI_SERVICES_DIR}" 2>/dev/null; then
+        return 1
+    fi
 
     local services=""
     local service_type

@@ -374,9 +374,11 @@ test_failed_write_is_reported_not_logged_as_success() {
     # returns 0 -- a record reported as published that never was.
     local root out
     root="$(mktemp -d "$TMPDIR_ROOT/failwrite.XXXXXX")"
-    mkdir -p "$root/routing.d" "$root/avahi-services"
+    mkdir -p "$root/routing.d"
     printf '%s\n' "$SK_ROUTING" > "$root/routing.d/signalk-server.yml"
-    chmod 500 "$root/avahi-services"
+    # A plain file where the services directory should be. chmod would prove
+    # nothing under root, which is how CI runs the suite.
+    printf 'not a directory\n' > "$root/avahi-services"
 
     out=$(ROUTING_DIR="$root/routing.d" \
         OUTPUT_DIR="$root/routing-labels" \
@@ -387,7 +389,6 @@ test_failed_write_is_reported_not_logged_as_success() {
         SYSTEMCTL="$TMPDIR_ROOT/systemctl-stub" \
         bash "$SCRIPT" signalk-server 2>&1)
     local status=$?
-    chmod 700 "$root/avahi-services"
 
     [ "$status" -eq 0 ] || { echo "the app start failed (exit $status)" >&2; return 1; }
 
@@ -428,6 +429,48 @@ test_record_withdrawn_when_routing_file_is_gone() {
     fi
 }
 
+test_failed_file_write_is_reported_not_logged_as_success() {
+    # The case above trips the mkdir check. This one reaches the write itself,
+    # which needs an unwritable directory -- so it cannot run as root.
+    if [ "$(id -u)" -eq 0 ]; then
+        echo "SKIP (running as root; chmod cannot make the directory unwritable)"
+        return 0
+    fi
+
+    local root out status
+    root="$(mktemp -d "$TMPDIR_ROOT/failfile.XXXXXX")"
+    mkdir -p "$root/routing.d" "$root/avahi-services"
+    printf '%s\n' "$SK_ROUTING" > "$root/routing.d/signalk-server.yml"
+    chmod 500 "$root/avahi-services"
+
+    out=$(ROUTING_DIR="$root/routing.d" \
+        OUTPUT_DIR="$root/routing-labels" \
+        MIDDLEWARE_DIR="$root/traefik-dynamic.d" \
+        PORT_REGISTRY="$root/port-registry" \
+        AVAHI_SERVICES_DIR="$root/avahi-services" \
+        RUNTIME_DIR="$root/container-apps" \
+        SYSTEMCTL="$TMPDIR_ROOT/systemctl-stub" \
+        bash "$SCRIPT" signalk-server 2>&1)
+    status=$?
+    chmod 700 "$root/avahi-services"
+
+    [ "$status" -eq 0 ] || { echo "the app start failed (exit $status)" >&2; return 1; }
+    case "$out" in
+        *"Created mDNS services"*)
+            echo "a failed write was logged as success:" >&2; echo "$out" >&2; return 1 ;;
+    esac
+    case "$out" in
+        *"WARNING: mDNS publication failed"*) ;;
+        *) echo "no warning for a failed write:" >&2; echo "$out" >&2; return 1 ;;
+    esac
+    # Nothing half-written left behind.
+    if ls "$root/avahi-services"/*.tmp.* >/dev/null 2>&1; then
+        echo "a temp file survived the failure" >&2
+        return 1
+    fi
+}
+
+run_test test_failed_file_write_is_reported_not_logged_as_success
 run_test test_failed_write_is_reported_not_logged_as_success
 run_test test_record_withdrawn_when_routing_file_is_gone
 run_test test_real_generated_routing_file_publishes
