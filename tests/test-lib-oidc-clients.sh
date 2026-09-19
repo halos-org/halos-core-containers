@@ -292,7 +292,8 @@ test_hashing_image_comes_from_the_compose_file() {
     # Deliberately not re-deriving the expected value with the same sed the
     # function uses: that would restate the extraction rather than test it.
     # grep for the line, strip to the tag by hand.
-    compose_tag=$(grep -m1 -oE 'authelia/authelia:[^[:space:]]+' "$REPO_ROOT/docker-compose.yml")
+    compose_tag=$(grep -m1 -oE '(ghcr\.io/)?authelia/authelia:[^[:space:]"'"'"']+' \
+        "$REPO_ROOT/docker-compose.yml")
     assert_eq "$image" "$compose_tag" "the hashing image must be the tag the stack runs" || return 1
 
     # Any direct reference, not just a numeric tag: `:latest` and a digest pin
@@ -313,37 +314,35 @@ test_extraction_handles_awkward_compose_shapes() {
     . "$LIB_OIDC"
     local dir; dir="$(mktemp -d "$TMPDIR_ROOT/shapes.XXXXXX")"
 
-    # A trailing comment must not end up inside the image argument.
-    printf 'services:\n  authelia:\n    image: authelia/authelia:4.39.28  # pinned\n' \
-        > "$dir/trailing-comment.yml"
-    HALOS_OIDC_COMPOSE_FILE="$dir/trailing-comment.yml"
-    assert_eq "$(halos_oidc_authelia_image)" "authelia/authelia:4.39.28" \
-        "a trailing comment leaked into the tag" || return 1
+    # Compose permits all of these, and the function refuses rather than
+    # guesses, so a shape it cannot read costs a failed first boot.
+    shape() {
+        printf 'services:\n  authelia-valkey:\n    image: valkey/valkey:9.1.2-alpine\n  authelia:\n    image: %s\n' \
+            "$1" > "$dir/shape.yml"
+        HALOS_OIDC_COMPOSE_FILE="$dir/shape.yml"
+        halos_oidc_authelia_image
+    }
 
-    # A commented-out line must not be picked up.
-    printf 'services:\n  authelia:\n    # image: authelia/authelia:9.9.9\n    image: authelia/authelia:4.39.28\n' \
-        > "$dir/commented.yml"
-    HALOS_OIDC_COMPOSE_FILE="$dir/commented.yml"
-    assert_eq "$(halos_oidc_authelia_image)" "authelia/authelia:4.39.28" \
-        "a commented-out image line was used" || return 1
+    assert_eq "$(shape 'authelia/authelia:4.39.28')" "authelia/authelia:4.39.28" \
+        "plain value" || return 1
+    assert_eq "$(shape '"authelia/authelia:4.39.28"')" "authelia/authelia:4.39.28" \
+        "double-quoted value" || return 1
+    assert_eq "$(shape "'authelia/authelia:4.39.28'")" "authelia/authelia:4.39.28" \
+        "single-quoted value" || return 1
+    assert_eq "$(shape 'authelia/authelia:4.39.28  # pinned')" "authelia/authelia:4.39.28" \
+        "inline comment leaked into the tag" || return 1
 
-    # valkey is a sibling service and must never match.
-    printf 'services:\n  authelia-valkey:\n    image: valkey/valkey:9.1.2-alpine\n  authelia:\n    image: authelia/authelia:4.39.28\n' \
-        > "$dir/siblings.yml"
-    HALOS_OIDC_COMPOSE_FILE="$dir/siblings.yml"
-    assert_eq "$(halos_oidc_authelia_image)" "authelia/authelia:4.39.28" \
-        "matched the wrong service's image" || return 1
+    # A registry-prefixed pin is still the image the stack runs, so hashing with
+    # it is correct and avoids the second pull. An earlier regex could not read
+    # it and a test asserted it was refused, which encoded that limitation as if
+    # it were a decision.
+    assert_eq "$(shape 'ghcr.io/authelia/authelia:4.39.28')" "ghcr.io/authelia/authelia:4.39.28" \
+        "registry-prefixed pin" || return 1
 
-    # A registry-prefixed pin is not recognised. Refusing is the right answer --
-    # guessing would reintroduce the second image -- but the diagnostic has to
-    # say so rather than leave someone hunting.
-    printf 'services:\n  authelia:\n    image: ghcr.io/authelia/authelia:4.39.28\n' \
-        > "$dir/registry.yml"
-    HALOS_OIDC_COMPOSE_FILE="$dir/registry.yml"
-    if halos_oidc_authelia_image >/dev/null 2>&1; then
-        echo "    a registry-prefixed pin was accepted; check the capture is still anchored"
-        return 1
-    fi
+    # The sibling service must never be picked up.
+    case "$(shape 'authelia/authelia:4.39.28')" in
+        valkey*) echo "    matched the wrong service's image"; return 1 ;;
+    esac
 
     HALOS_OIDC_COMPOSE_FILE="$REPO_ROOT/docker-compose.yml"
 }

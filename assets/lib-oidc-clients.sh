@@ -33,23 +33,56 @@ HALOS_OIDC_COMPOSE_FILE="${HALOS_OIDC_COMPOSE_FILE:-/var/lib/container-apps/halo
 # the stack ran 4.39.19, and an unreachable registry took the whole stack down
 # on first boot.
 #
+# Parsed as YAML, not matched with a regex. Compose permits the image quoted,
+# with an inline comment, and with a registry prefix; a pattern that misses one
+# of those returns nothing, and this function refuses rather than guesses, so
+# the cost of a near-miss is a failed first boot. python3-yaml is already a
+# dependency of this package.
+#
 # Resolved at call time, not when this file is sourced: callers source it from
 # the installed path, from a checkout, and from a staged root in the tests, and
 # only the caller knows where the compose file is in each.
 halos_oidc_authelia_image() {
-    local image
-    # The capture stops at whitespace so a trailing comment, or a CR from a
-    # CRLF file, cannot end up inside the image argument.
-    image=$(sed -n 's/^[[:space:]]*image:[[:space:]]*\(authelia\/authelia:[^[:space:]]*\).*$/\1/p' \
-        "$HALOS_OIDC_COMPOSE_FILE" 2>/dev/null | head -1)
+    local image status
+
+    image=$(python3 - "$HALOS_OIDC_COMPOSE_FILE" <<'AUTHELIA_IMAGE_EOF'
+import sys
+
+try:
+    import yaml
+except ImportError:
+    sys.exit(3)
+
+try:
+    with open(sys.argv[1], encoding="utf-8") as handle:
+        doc = yaml.safe_load(handle)
+except Exception:
+    sys.exit(4)
+
+service = ((doc or {}).get("services") or {}).get("authelia") or {}
+image = service.get("image") if isinstance(service, dict) else None
+if not isinstance(image, str) or not image.strip():
+    sys.exit(4)
+
+print(image.strip())
+AUTHELIA_IMAGE_EOF
+    ) && status=0 || status=$?
+
+    # A parser that cannot run is not a compose file that has no image, and
+    # saying so saves the reader opening the wrong file.
+    if [ "${status:-0}" -eq 3 ]; then
+        printf 'python3 with PyYAML is required to read the Authelia image (install python3-yaml)\n' >&2
+        return 1
+    fi
 
     # Refuse rather than fall back. A guessed tag reintroduces the second image
     # this function exists to prevent, and hashing with no image at all would
     # register a client with an empty secret that Authelia rejects at load.
-    if [ -z "$image" ]; then
+    if [ "${status:-0}" -ne 0 ] || [ -z "$image" ]; then
         printf 'no authelia image found in %s\n' "$HALOS_OIDC_COMPOSE_FILE" >&2
         return 1
     fi
+
     printf '%s\n' "$image"
 }
 
