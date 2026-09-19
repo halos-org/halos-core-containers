@@ -8,7 +8,7 @@ Homepage: https://github.com/halos-org/halos-core-containers
 
 Package: halos-core-containers
 Architecture: all
-Depends: ${misc:Depends}, docker-compose | docker-compose-plugin, docker.io (>= 20.10) | docker-ce (>= 20.10), halos-homarr-branding
+Depends: ${misc:Depends}, docker-compose | docker-compose-plugin, docker.io (>= 20.10) | docker-ce (>= 20.10), halos-homarr-branding, avahi-daemon, python3, python3-yaml
 Recommends: halos-cockpit-config
 Provides: halos-reverse-proxy
 Conflicts: halos-reverse-proxy

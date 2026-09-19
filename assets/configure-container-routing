@@ -5,6 +5,7 @@
 # generate Traefik routing configuration before the container starts.
 #
 # Usage: configure-container-routing <app_id>
+#        configure-container-routing --mdns-withdraw <app_id>
 #
 # Port-based routing: each app gets a dedicated HTTPS port from the 4430-4450
 # range, assigned on first start and persisted in /etc/halos/port-registry.
@@ -15,6 +16,7 @@
 # 2. Per-app ForwardAuth middleware in /etc/halos/traefik-dynamic.d/ (if needed)
 # 3. Path redirect config in /etc/halos/traefik-dynamic.d/
 # 4. HALOS_EXTERNAL_PORT in the app's runtime env directory
+# 5. mDNS service records in /etc/avahi/services/ (if the app declares any)
 #
 # Provided by halos-core-containers. Other proxy packages (caddy, nginx)
 # would provide their own implementation of this command.
@@ -26,6 +28,9 @@ ROUTING_DIR="${ROUTING_DIR:-/etc/halos/routing.d}"
 OUTPUT_DIR="${OUTPUT_DIR:-/run/halos/routing-labels}"
 MIDDLEWARE_DIR="${MIDDLEWARE_DIR:-/etc/halos/traefik-dynamic.d}"
 PORT_REGISTRY="${PORT_REGISTRY:-/etc/halos/port-registry}"
+AVAHI_SERVICES_DIR="${AVAHI_SERVICES_DIR:-/etc/avahi/services}"
+SYSTEMCTL="${SYSTEMCTL:-systemctl}"
+RUNTIME_DIR="${RUNTIME_DIR:-/run/container-apps}"
 PORT_RANGE_START=4430
 PORT_RANGE_END=4450
 
@@ -225,7 +230,7 @@ write_external_port() {
     local external_port="$3"
 
     # Runtime env is at /run/container-apps/<package_name>/
-    local runtime_dir="/run/container-apps/${package_name}"
+    local runtime_dir="${RUNTIME_DIR}/${package_name}"
     local port_file="${runtime_dir}/external-port.env"
 
     mkdir -p "${runtime_dir}"
@@ -351,18 +356,247 @@ EOF
     log "Created override: ${override_file}"
 }
 
+# Reject an app id that cannot safely become a file name.
+#
+# app_id reaches this script from argv. `/` or `..` would put the record
+# outside AVAHI_SERVICES_DIR, and the shape below matches what
+# container-packaging-tools already enforces for the field.
+is_valid_app_id() {
+    case "$1" in
+        ""|*/*|*..*) return 1 ;;
+    esac
+    printf '%s' "$1" | grep -Eq '^[a-z0-9][a-z0-9-]*$'
+}
+
+# Read the DNS-SD services an app declares under the top-level `mdns:` key.
+#
+# A real parser, not grep: routing.d is a proxy-agnostic interchange format that
+# other producers may write, and the shapes a hand parser drops -- flow style,
+# quoted scalars -- would read as "declares nothing" and withdraw a working
+# record. Prints one "<type> <port>" line per service. Exit 0 with output, 3
+# when the key is absent, 4 when it is present but unusable, and 5 when the
+# parser cannot run at all. 5 is separate because a broken environment is not a
+# bad declaration, and reporting it as one sends the reader to the wrong file.
+get_mdns_services() {
+    local file="$1"
+    local external_port="$2"
+
+    if ! command -v python3 >/dev/null 2>&1; then
+        return 5
+    fi
+
+    python3 - "$file" "$external_port" <<'MDNS_PARSE_EOF'
+import re
+import sys
+
+TYPE_RE = re.compile(r"_[A-Za-z0-9][A-Za-z0-9-]*\._(tcp|udp)\Z")
+
+path, external_port = sys.argv[1], sys.argv[2]
+try:
+    import yaml
+except ImportError:
+    sys.exit(5)
+
+try:
+    with open(path, encoding="utf-8") as handle:
+        doc = yaml.safe_load(handle)
+except Exception:
+    sys.exit(4)
+
+if not isinstance(doc, dict) or "mdns" not in doc:
+    sys.exit(3)
+
+entries = doc["mdns"]
+if not isinstance(entries, list) or not entries:
+    sys.exit(4)
+
+lines = []
+for entry in entries:
+    if not isinstance(entry, dict):
+        sys.exit(4)
+    service_type = entry.get("type")
+    # Validated at build time too, but routing.d is editable on the device and
+    # the value is interpolated into XML by root.
+    if not isinstance(service_type, str) or not TYPE_RE.match(service_type):
+        sys.exit(4)
+    port = entry.get("port", external_port)
+    if not str(port).isdigit() or not 0 < int(port) < 65536:
+        sys.exit(4)
+    lines.append("%s %s" % (service_type, port))
+
+print("\n".join(lines))
+MDNS_PARSE_EOF
+}
+
+# Publish the app's DNS-SD service records through avahi.
+#
+# The app itself cannot answer mDNS: avahi-daemon owns UDP 5353 on the host, and
+# a host-networked container that starts a second responder is silent. Records
+# that take the Traefik TLS port cannot ship as a static file either, because
+# that port is only assigned here.
+generate_mdns_services() {
+    local app_id="$1"
+    local external_port="$2"
+    local routing_file="$3"
+
+    if ! is_valid_app_id "${app_id}"; then
+        log "WARNING: refusing to publish mDNS records for invalid app id '${app_id}'"
+        return 1
+    fi
+
+    local service_file="${AVAHI_SERVICES_DIR}/halos-${app_id}.service"
+
+    local services_spec
+    local status
+    services_spec=$(get_mdns_services "$routing_file" "$external_port") && status=0 || status=$?
+
+    if [ "${status}" -eq 3 ]; then
+        # The app declares nothing. Withdraw any record left from a previous
+        # declaration; a record for a port nothing serves is worse than none.
+        # A withdrawal that failed has to surface: the record is still on the
+        # network, and reporting that as nothing-to-do is the bug this function
+        # was just fixed for.
+        withdraw_mdns_services "$app_id" || return 1
+        return 0
+    fi
+
+    if [ "${status}" -eq 5 ]; then
+        log "WARNING: python3 with PyYAML is required to publish mDNS records (install python3-yaml); leaving ${service_file} as is"
+        return 0
+    fi
+
+    if [ "${status}" -ne 0 ]; then
+        # Present but unusable. Warn and keep whatever is published: silently
+        # withdrawing on a parse failure is how discovery disappears with
+        # nothing to debug from.
+        log "WARNING: unusable mdns declaration in ${routing_file}; leaving ${service_file} as is"
+        return 0
+    fi
+
+    if ! mkdir -p "${AVAHI_SERVICES_DIR}" 2>/dev/null; then
+        return 1
+    fi
+
+    local services=""
+    local service_type
+    local port
+    while read -r service_type port; do
+        [ -n "${service_type}" ] || continue
+        services="${services}  <service>
+    <type>${service_type}</type>
+    <port>${port}</port>
+  </service>
+"
+    done <<< "${services_spec}"
+
+    local new_content
+    new_content=$(cat <<MDNS_XML_EOF
+<?xml version="1.0" standalone='no'?>
+<!DOCTYPE service-group SYSTEM "avahi-service.dtd">
+<!-- Auto-generated by configure-container-routing. The app id is in the file
+     name, not here: it may contain a double hyphen, which is illegal inside an
+     XML comment and would make avahi reject the whole file. -->
+<service-group>
+  <name replace-wildcards="yes">%h</name>
+${services}</service-group>
+MDNS_XML_EOF
+)
+
+    if [ -f "${service_file}" ] && [ "$(cat "${service_file}")" = "${new_content}" ]; then
+        log "mDNS services unchanged: ${service_file}"
+        return 0
+    fi
+
+    # Written through a temp file: avahi watches this directory, and a partial
+    # read is a parse failure that drops every record in the file.
+    #
+    # Every step is checked rather than left to `set -e`. This function is
+    # called on the left of `||`, which disables `set -e` inside it -- so an
+    # unchecked failure would fall through to the success log and return 0,
+    # reporting a record that was never published.
+    local tmp_file="${service_file}.tmp.$$"
+    if ! printf '%s\n' "${new_content}" > "${tmp_file}" 2>/dev/null; then
+        rm -f "${tmp_file}"
+        return 1
+    fi
+    if ! chmod 644 "${tmp_file}" || ! mv -f "${tmp_file}" "${service_file}"; then
+        rm -f "${tmp_file}"
+        return 1
+    fi
+    log "Created mDNS services: ${service_file}"
+    # Explicit, so that a future reload_avahi which can fail does not turn every
+    # successful publish into a reported failure. The record is already written;
+    # a stale advertisement is avahi's problem to notice, not a publish error.
+    reload_avahi
+    return 0
+}
+
+# Take an app's records off the network. Called on stop as well as on a run that
+# finds no declaration, so the advertisement does not outlive what it points at.
+withdraw_mdns_services() {
+    local app_id="$1"
+
+    if ! is_valid_app_id "${app_id}"; then
+        log "WARNING: refusing to touch mDNS records for invalid app id '${app_id}'"
+        return 1
+    fi
+
+    local service_file="${AVAHI_SERVICES_DIR}/halos-${app_id}.service"
+
+    if [ -f "${service_file}" ]; then
+        if ! rm -f "${service_file}"; then
+            return 1
+        fi
+        log "Withdrew mDNS services: ${service_file}"
+        reload_avahi
+    fi
+    return 0
+}
+
+# Ask a running avahi-daemon to re-read its services directory. Absent, stopped
+# or still starting avahi is not an error: it reads the directory when it comes
+# up, and watches the directory once running. --no-block so a slow reload cannot
+# stall the ExecStartPre this runs in.
+reload_avahi() {
+    if command -v "${SYSTEMCTL}" >/dev/null 2>&1 && \
+       "${SYSTEMCTL}" is-active --quiet avahi-daemon 2>/dev/null; then
+        "${SYSTEMCTL}" reload --no-block avahi-daemon || log "WARNING: avahi-daemon reload failed"
+    fi
+}
+
 # Main
 main() {
     local app_id="$1"
 
+    if [ "${app_id}" = "--mdns-withdraw" ]; then
+        # Stop-time counterpart, run from the app unit's ExecStopPost. Takes no
+        # routing config: the record must come off even when routing.d is gone.
+        if [ -z "${2:-}" ]; then
+            echo "Usage: configure-container-routing --mdns-withdraw <app_id>" >&2
+            exit 1
+        fi
+        # Runs from ExecStopPost with a leading `-`, so a non-zero exit cannot
+        # fail the stop; it just has to be visible in the journal.
+        withdraw_mdns_services "$2" \
+            || log "WARNING: could not withdraw mDNS services for $2"
+        exit 0
+    fi
+
     if [ -z "${app_id}" ]; then
         echo "Usage: configure-container-routing <app_id>" >&2
+        echo "       configure-container-routing --mdns-withdraw <app_id>" >&2
         exit 1
     fi
 
     local routing_file="${ROUTING_DIR}/${app_id}.yml"
 
     if [ ! -f "${routing_file}" ]; then
+        # The declaration is gone, so any record written from it is stale and
+        # would answer for a port nothing serves. Only this app's record is
+        # touched: reconciling every halos-*.service from one app's start would
+        # let a transiently missing routing file take another app off the air.
+        withdraw_mdns_services "${app_id}" \
+            || log "WARNING: could not withdraw mDNS services for ${app_id}"
         log "No routing config for ${app_id} at ${routing_file}, skipping"
         exit 0
     fi
@@ -385,6 +619,13 @@ main() {
     generate_override "${routing_file}" "${external_port}"
     generate_path_redirect "${app_id}" "${external_port}"
     write_external_port "${app_id}" "${package_name}" "${external_port}"
+
+    # Never fatal. This runs in the app's ExecStartPre, where a non-zero exit
+    # costs five restarts and then a `failed` unit that does not self-heal.
+    # Trading the navigation server for a discovery record is the wrong way
+    # round.
+    generate_mdns_services "${app_id}" "${external_port}" "${routing_file}" \
+        || log "WARNING: mDNS publication failed for ${app_id}; app start continues"
 }
 
 main "$@"
