@@ -24,6 +24,17 @@ FAILS=0
 TMPDIR_ROOT="$(mktemp -d)"
 trap 'rm -rf "$TMPDIR_ROOT"' EXIT
 
+# reload_avahi shells out to systemctl. Point it at a stub that records calls,
+# so running these tests on a Linux host cannot reload the real avahi-daemon.
+cat > "$TMPDIR_ROOT/systemctl-stub" <<'STUB'
+#!/usr/bin/env bash
+echo "$@" >> "${SYSTEMCTL_CALLS:-/dev/null}"
+# is-active: claim the daemon is running so the reload path is exercised.
+[ "$1" = "is-active" ] && exit 0
+exit 0
+STUB
+chmod +x "$TMPDIR_ROOT/systemctl-stub"
+
 if [ -t 1 ]; then
     GREEN=$'\033[32m'; RED=$'\033[31m'; RESET=$'\033[0m'
 else
@@ -66,6 +77,7 @@ run_configure() {
     PORT_REGISTRY="$root/port-registry" \
     AVAHI_SERVICES_DIR="$root/avahi-services" \
     RUNTIME_DIR="$root/container-apps" \
+    SYSTEMCTL="$TMPDIR_ROOT/systemctl-stub" \
         bash "$SCRIPT" "$app_id" >/dev/null 2>&1 || {
             echo "configure-container-routing failed for $app_id" >&2
             return 1
@@ -93,7 +105,7 @@ routing:
 auth:
   mode: oidc
 mdns:
-- _signalk-wss._tcp'
+- type: _signalk-wss._tcp'
 
 # ---------------------------------------------------------------------------
 
@@ -122,12 +134,164 @@ test_no_service_file_without_mdns() {
 
 test_multiple_service_types() {
     local routing="${SK_ROUTING}
-- _signalk-http._tcp"
+- type: _signalk-https._tcp"
     local root content
     root="$(run_configure signalk-server "$routing")" || return 1
     content="$(cat "$root/avahi-services/halos-signalk-server.service")"
     assert_contains "$content" "<type>_signalk-wss._tcp</type>" "first type missing:" || return 1
-    assert_contains "$content" "<type>_signalk-http._tcp</type>" "second type missing:" || return 1
+    assert_contains "$content" "<type>_signalk-https._tcp</type>" "second type missing:" || return 1
+}
+
+test_fixed_port_overrides_the_traefik_port() {
+    local routing="${SK_ROUTING}
+- type: _nmea-0183._tcp
+  port: 10110"
+    local root content port
+    root="$(run_configure signalk-server "$routing")" || return 1
+    content="$(cat "$root/avahi-services/halos-signalk-server.service")"
+    port="$(grep '^signalk-server=' "$root/port-registry" | cut -d= -f2)"
+    assert_contains "$content" "<port>10110</port>" "fixed port missing:" || return 1
+    assert_contains "$content" "<port>${port}</port>" "assigned port missing:" || return 1
+}
+
+test_generated_file_is_well_formed_xml() {
+    local routing="${SK_ROUTING}
+- type: _nmea-0183._tcp
+  port: 10110"
+    local root file
+    root="$(run_configure signalk-server "$routing")" || return 1
+    file="$root/avahi-services/halos-signalk-server.service"
+    # A substring match passes on a file avahi rejects outright, and a rejected
+    # file publishes nothing while the script reports success.
+    python3 - "$file" <<'XMLCHECK'
+import sys
+import xml.etree.ElementTree as ET
+
+root = ET.parse(sys.argv[1]).getroot()
+assert root.tag == "service-group", root.tag
+types = sorted(s.findtext("type") for s in root.findall("service"))
+assert types == ["_nmea-0183._tcp", "_signalk-wss._tcp"], types
+XMLCHECK
+}
+
+# Shapes a grep-based reader would drop. Each one must publish, not withdraw.
+test_quoted_and_flow_style_entries_publish() {
+    local root content
+    root="$(run_configure signalk-server "app_id: signalk-server
+package_name: marine-signalk-server-container
+routing:
+  backend:
+    type: host
+    service: signalk-server
+    port: 3000
+auth:
+  mode: oidc
+mdns: [{type: \"_signalk-wss._tcp\"}]")" || return 1
+    content="$(cat "$root/avahi-services/halos-signalk-server.service")"
+    assert_contains "$content" "<type>_signalk-wss._tcp</type>" "flow-style quoted entry dropped:" || return 1
+}
+
+test_unusable_declaration_keeps_the_existing_record() {
+    local root
+    root="$(mktemp -d "$TMPDIR_ROOT/bad.XXXXXX")"
+    mkdir -p "$root/routing.d" "$root/avahi-services"
+    printf '%s\n' "app_id: signalk-server
+package_name: marine-signalk-server-container
+routing:
+  backend:
+    type: host
+    service: signalk-server
+    port: 3000
+auth:
+  mode: oidc
+mdns: true" > "$root/routing.d/signalk-server.yml"
+    echo "previous record" > "$root/avahi-services/halos-signalk-server.service"
+
+    ROUTING_DIR="$root/routing.d" \
+    OUTPUT_DIR="$root/routing-labels" \
+    MIDDLEWARE_DIR="$root/traefik-dynamic.d" \
+    PORT_REGISTRY="$root/port-registry" \
+    AVAHI_SERVICES_DIR="$root/avahi-services" \
+    RUNTIME_DIR="$root/container-apps" \
+    SYSTEMCTL="$TMPDIR_ROOT/systemctl-stub" \
+        bash "$SCRIPT" signalk-server >/dev/null 2>&1 || {
+            echo "a malformed mdns declaration must not fail the app start" >&2
+            return 1
+        }
+
+    if [ ! -f "$root/avahi-services/halos-signalk-server.service" ]; then
+        echo "an unparseable declaration withdrew a working record" >&2
+        return 1
+    fi
+}
+
+test_withdraw_mode_removes_the_record() {
+    local root
+    root="$(run_configure signalk-server "$SK_ROUTING")" || return 1
+    [ -f "$root/avahi-services/halos-signalk-server.service" ] || return 1
+
+    AVAHI_SERVICES_DIR="$root/avahi-services" \
+    SYSTEMCTL="$TMPDIR_ROOT/systemctl-stub" \
+        bash "$SCRIPT" --mdns-withdraw signalk-server >/dev/null 2>&1 || return 1
+
+    if [ -e "$root/avahi-services/halos-signalk-server.service" ]; then
+        echo "--mdns-withdraw left the record in place" >&2
+        return 1
+    fi
+}
+
+test_unwritable_services_dir_does_not_fail_the_start() {
+    local root
+    root="$(mktemp -d "$TMPDIR_ROOT/ro.XXXXXX")"
+    mkdir -p "$root/routing.d" "$root/avahi-services"
+    printf '%s\n' "$SK_ROUTING" > "$root/routing.d/signalk-server.yml"
+    chmod 500 "$root/avahi-services"
+
+    ROUTING_DIR="$root/routing.d" \
+    OUTPUT_DIR="$root/routing-labels" \
+    MIDDLEWARE_DIR="$root/traefik-dynamic.d" \
+    PORT_REGISTRY="$root/port-registry" \
+    AVAHI_SERVICES_DIR="$root/avahi-services" \
+    RUNTIME_DIR="$root/container-apps" \
+    SYSTEMCTL="$TMPDIR_ROOT/systemctl-stub" \
+        bash "$SCRIPT" signalk-server >/dev/null 2>&1
+    local status=$?
+    chmod 700 "$root/avahi-services"
+
+    if [ "$status" -ne 0 ]; then
+        echo "a failed mDNS write aborted the start (exit $status)" >&2
+        return 1
+    fi
+    # The Traefik half must still be there.
+    [ -f "$root/routing-labels/signalk-server.yml" ] || {
+        echo "routing labels missing" >&2
+        return 1
+    }
+}
+
+test_port_change_rewrites_the_record() {
+    local root file
+    root="$(run_configure signalk-server "$SK_ROUTING")" || return 1
+    file="$root/avahi-services/halos-signalk-server.service"
+    local before
+    before="$(cat "$file")"
+
+    # Second run with no change: the record must be byte-identical.
+    ROUTING_DIR="$root/routing.d" OUTPUT_DIR="$root/routing-labels" \
+    MIDDLEWARE_DIR="$root/traefik-dynamic.d" PORT_REGISTRY="$root/port-registry" \
+    AVAHI_SERVICES_DIR="$root/avahi-services" RUNTIME_DIR="$root/container-apps" \
+    SYSTEMCTL="$TMPDIR_ROOT/systemctl-stub" \
+        bash "$SCRIPT" signalk-server >/dev/null 2>&1 || return 1
+    assert_contains "$(cat "$file")" "$before" "second run changed the record:" || return 1
+
+    # Reassign the port: the record names it, so it must follow.
+    echo "signalk-server=4444" > "$root/port-registry"
+    ROUTING_DIR="$root/routing.d" OUTPUT_DIR="$root/routing-labels" \
+    MIDDLEWARE_DIR="$root/traefik-dynamic.d" PORT_REGISTRY="$root/port-registry" \
+    AVAHI_SERVICES_DIR="$root/avahi-services" RUNTIME_DIR="$root/container-apps" \
+    SYSTEMCTL="$TMPDIR_ROOT/systemctl-stub" \
+        bash "$SCRIPT" signalk-server >/dev/null 2>&1 || return 1
+    assert_contains "$(cat "$file")" "<port>4444</port>" "record kept the old port:" || return 1
 }
 
 test_stale_file_removed_when_mdns_dropped() {
@@ -143,6 +307,7 @@ test_stale_file_removed_when_mdns_dropped() {
     PORT_REGISTRY="$root/port-registry" \
     AVAHI_SERVICES_DIR="$root/avahi-services" \
     RUNTIME_DIR="$root/container-apps" \
+    SYSTEMCTL="$TMPDIR_ROOT/systemctl-stub" \
         bash "$SCRIPT" webapp >/dev/null 2>&1 || return 1
 
     if [ -e "$root/avahi-services/halos-webapp.service" ]; then
@@ -151,9 +316,54 @@ test_stale_file_removed_when_mdns_dropped() {
     fi
 }
 
+test_real_generated_routing_file_publishes() {
+    local fixture="$SCRIPT_DIR/fixtures/routing.d-signalk-server.yml"
+    [ -f "$fixture" ] || { echo "fixture missing: $fixture" >&2; return 1; }
+
+    local root
+    root="$(mktemp -d "$TMPDIR_ROOT/fixture.XXXXXX")"
+    mkdir -p "$root/routing.d"
+    cp "$fixture" "$root/routing.d/signalk-server.yml"
+
+    ROUTING_DIR="$root/routing.d" \
+    OUTPUT_DIR="$root/routing-labels" \
+    MIDDLEWARE_DIR="$root/traefik-dynamic.d" \
+    PORT_REGISTRY="$root/port-registry" \
+    AVAHI_SERVICES_DIR="$root/avahi-services" \
+    RUNTIME_DIR="$root/container-apps" \
+    SYSTEMCTL="$TMPDIR_ROOT/systemctl-stub" \
+        bash "$SCRIPT" signalk-server >/dev/null 2>&1 || return 1
+
+    local port
+    port="$(grep '^signalk-server=' "$root/port-registry" | cut -d= -f2)"
+    python3 - "$root/avahi-services/halos-signalk-server.service" "$port" <<'FIXCHECK'
+import sys
+import xml.etree.ElementTree as ET
+
+path, external_port = sys.argv[1], sys.argv[2]
+root = ET.parse(path).getroot()
+got = {s.findtext("type"): s.findtext("port") for s in root.findall("service")}
+expected = {
+    "_signalk-wss._tcp": external_port,
+    "_signalk-https._tcp": external_port,
+    "_https._tcp": external_port,
+    "_nmea-0183._tcp": "10110",
+}
+assert got == expected, f"{got} != {expected}"
+FIXCHECK
+}
+
+run_test test_real_generated_routing_file_publishes
 run_test test_service_file_written_with_assigned_port
 run_test test_no_service_file_without_mdns
 run_test test_multiple_service_types
+run_test test_fixed_port_overrides_the_traefik_port
+run_test test_generated_file_is_well_formed_xml
+run_test test_quoted_and_flow_style_entries_publish
+run_test test_unusable_declaration_keeps_the_existing_record
+run_test test_withdraw_mode_removes_the_record
+run_test test_unwritable_services_dir_does_not_fail_the_start
+run_test test_port_change_rewrites_the_record
 run_test test_stale_file_removed_when_mdns_dropped
 
 echo ""
