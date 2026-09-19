@@ -289,14 +289,59 @@ test_hashing_image_comes_from_the_compose_file() {
         echo "    could not read the Authelia image from the compose file"
         return 1
     }
-    compose_tag=$(sed -n 's/^[[:space:]]*image:[[:space:]]*\(authelia\/authelia:.*\)$/\1/p' \
-        "$REPO_ROOT/docker-compose.yml" | head -1)
+    # Deliberately not re-deriving the expected value with the same sed the
+    # function uses: that would restate the extraction rather than test it.
+    # grep for the line, strip to the tag by hand.
+    compose_tag=$(grep -m1 -oE 'authelia/authelia:[^[:space:]]+' "$REPO_ROOT/docker-compose.yml")
     assert_eq "$image" "$compose_tag" "the hashing image must be the tag the stack runs" || return 1
 
     if grep -qE 'authelia/authelia:[0-9]' "$REPO_ROOT/prestart.sh" "$LIB_OIDC"; then
         echo "    an Authelia tag is named directly; it must come from halos_oidc_authelia_image"
         return 1
     fi
+}
+
+# Shapes a compose file can legitimately take. The extraction has to survive
+# what an editor would plausibly write, and refuse what it cannot read, rather
+# than hand docker something it will reject.
+test_extraction_handles_awkward_compose_shapes() {
+    # shellcheck source=/dev/null
+    . "$LIB_OIDC"
+    local dir; dir="$(mktemp -d "$TMPDIR_ROOT/shapes.XXXXXX")"
+
+    # A trailing comment must not end up inside the image argument.
+    printf 'services:\n  authelia:\n    image: authelia/authelia:4.39.28  # pinned\n' \
+        > "$dir/trailing-comment.yml"
+    HALOS_OIDC_COMPOSE_FILE="$dir/trailing-comment.yml"
+    assert_eq "$(halos_oidc_authelia_image)" "authelia/authelia:4.39.28" \
+        "a trailing comment leaked into the tag" || return 1
+
+    # A commented-out line must not be picked up.
+    printf 'services:\n  authelia:\n    # image: authelia/authelia:9.9.9\n    image: authelia/authelia:4.39.28\n' \
+        > "$dir/commented.yml"
+    HALOS_OIDC_COMPOSE_FILE="$dir/commented.yml"
+    assert_eq "$(halos_oidc_authelia_image)" "authelia/authelia:4.39.28" \
+        "a commented-out image line was used" || return 1
+
+    # valkey is a sibling service and must never match.
+    printf 'services:\n  authelia-valkey:\n    image: valkey/valkey:9.1.2-alpine\n  authelia:\n    image: authelia/authelia:4.39.28\n' \
+        > "$dir/siblings.yml"
+    HALOS_OIDC_COMPOSE_FILE="$dir/siblings.yml"
+    assert_eq "$(halos_oidc_authelia_image)" "authelia/authelia:4.39.28" \
+        "matched the wrong service's image" || return 1
+
+    # A registry-prefixed pin is not recognised. Refusing is the right answer --
+    # guessing would reintroduce the second image -- but the diagnostic has to
+    # say so rather than leave someone hunting.
+    printf 'services:\n  authelia:\n    image: ghcr.io/authelia/authelia:4.39.28\n' \
+        > "$dir/registry.yml"
+    HALOS_OIDC_COMPOSE_FILE="$dir/registry.yml"
+    if halos_oidc_authelia_image >/dev/null 2>&1; then
+        echo "    a registry-prefixed pin was accepted; check the capture is still anchored"
+        return 1
+    fi
+
+    HALOS_OIDC_COMPOSE_FILE="$REPO_ROOT/docker-compose.yml"
 }
 
 # Refusing beats guessing: a fallback tag would reintroduce the second image,
@@ -849,6 +894,7 @@ test_reload_aborts_without_authelia_secrets() {
 run_test test_merge_renders_clients
 run_test test_merge_sweeps_temp_render_from_a_killed_run
 run_test test_hashing_image_comes_from_the_compose_file
+run_test test_extraction_handles_awkward_compose_shapes
 run_test test_missing_compose_file_refuses_rather_than_guesses
 run_test test_sweep_glob_matches_what_the_renderer_creates
 run_test test_merge_sweeps_when_nothing_needs_rendering

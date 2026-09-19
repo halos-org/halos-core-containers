@@ -47,8 +47,12 @@ halos_load_hostnames
 LIB_OIDC_CLIENTS="/usr/lib/halos-core-containers/lib-oidc-clients.sh"
 if [ ! -f "$LIB_OIDC_CLIENTS" ]; then
     LIB_OIDC_CLIENTS="${SCRIPT_DIR}/assets/lib-oidc-clients.sh"
-    # Running from a checkout: the library reads the Authelia tag out of the
-    # compose file, and the installed path does not exist here.
+fi
+# Hash with the tag from the compose file that sits beside this script, which is
+# the one `docker compose up` here will run. Keyed off that file rather than off
+# which library was found: a dev machine with the package installed would
+# otherwise hash with the installed tag while running the checkout's stack.
+if [ -f "${SCRIPT_DIR}/docker-compose.yml" ]; then
     HALOS_OIDC_COMPOSE_FILE="${SCRIPT_DIR}/docker-compose.yml"
 fi
 # shellcheck source=assets/lib-oidc-clients.sh

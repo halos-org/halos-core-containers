@@ -38,7 +38,9 @@ HALOS_OIDC_COMPOSE_FILE="${HALOS_OIDC_COMPOSE_FILE:-/var/lib/container-apps/halo
 # only the caller knows where the compose file is in each.
 halos_oidc_authelia_image() {
     local image
-    image=$(sed -n 's/^[[:space:]]*image:[[:space:]]*\(authelia\/authelia:.*\)$/\1/p' \
+    # The capture stops at whitespace so a trailing comment, or a CR from a
+    # CRLF file, cannot end up inside the image argument.
+    image=$(sed -n 's/^[[:space:]]*image:[[:space:]]*\(authelia\/authelia:[^[:space:]]*\).*$/\1/p' \
         "$HALOS_OIDC_COMPOSE_FILE" 2>/dev/null | head -1)
 
     # Refuse rather than fall back. A guessed tag reintroduces the second image
