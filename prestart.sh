@@ -47,6 +47,9 @@ halos_load_hostnames
 LIB_OIDC_CLIENTS="/usr/lib/halos-core-containers/lib-oidc-clients.sh"
 if [ ! -f "$LIB_OIDC_CLIENTS" ]; then
     LIB_OIDC_CLIENTS="${SCRIPT_DIR}/assets/lib-oidc-clients.sh"
+    # Running from a checkout: the library reads the Authelia tag out of the
+    # compose file, and the installed path does not exist here.
+    HALOS_OIDC_COMPOSE_FILE="${SCRIPT_DIR}/docker-compose.yml"
 fi
 # shellcheck source=assets/lib-oidc-clients.sh
 . "$LIB_OIDC_CLIENTS"
@@ -484,8 +487,12 @@ if [ ! -f "${AUTHELIA_DATA}/users_database.yml" ]; then
     # the same CLI. Docker's own output is kept: without it an unreachable
     # registry, a rate-limited pull and a stopped daemon all reduce to one
     # generic line, with the whole stack down and nothing to attribute it to.
+    if ! AUTHELIA_IMAGE=$(halos_oidc_authelia_image); then
+        echo "ERROR: could not determine the Authelia image to hash with" >&2
+        exit 1
+    fi
     if ! HASH_OUTPUT=$(HALOS_ADMIN_PW="${DEFAULT_PASSWORD}" docker run --rm \
-        -e HALOS_ADMIN_PW "${HALOS_OIDC_AUTHELIA_IMAGE}" \
+        -e HALOS_ADMIN_PW "${AUTHELIA_IMAGE}" \
         sh -c 'authelia crypto hash generate argon2 --password "$HALOS_ADMIN_PW"' 2>&1); then
         echo "ERROR: could not generate the initial password hash" >&2
         printf 'docker: %s\n' "${HASH_OUTPUT}" >&2

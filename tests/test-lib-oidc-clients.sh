@@ -96,6 +96,12 @@ EOF
     cp "$LIB_HOSTNAMES" "$root/usr/lib/halos-core-containers/lib-hostnames.sh"
     cp "$LIB_OIDC" "$root/usr/lib/halos-core-containers/lib-oidc-clients.sh"
 
+    # The repo's own compose file, not a fixture: the library reads the Authelia
+    # tag out of it, so a fixture would let the extraction pass here and fail on
+    # a device the moment the real file's shape changed.
+    cp "$REPO_ROOT/docker-compose.yml" \
+       "$root/var/lib/container-apps/halos-core-containers/docker-compose.yml"
+
     printf 'halosdev.local\n' > "$root/etc/halos/hostnames.conf"
 
     local authelia="$root/var/lib/container-apps/halos-core-containers/data/authelia"
@@ -190,6 +196,7 @@ merge_on() {
     # shellcheck source=/dev/null
     . "$root/usr/lib/halos-core-containers/lib-oidc-clients.sh"
 
+    HALOS_OIDC_COMPOSE_FILE="$root/var/lib/container-apps/halos-core-containers/docker-compose.yml"
     OIDC_CLIENTS_DIR="$root/etc/halos/oidc-clients.d"
     AUTHELIA_OIDC_FILE="${authelia}/oidc-clients.yml"
     OIDC_HMAC_SECRET="hmac-fixture"
@@ -218,6 +225,7 @@ run_reload() {
     HALOS_OIDC_CLIENTS_DIR="$root/etc/halos/oidc-clients.d" \
     HALOS_HOSTNAMES_FILE="$root/etc/halos/hostnames.conf" \
     HALOS_HOSTNAMES_DOMAIN_STATE="" \
+    HALOS_OIDC_COMPOSE_FILE="$root/var/lib/container-apps/halos-core-containers/docker-compose.yml" \
         bash "$RELOAD_TOOL" "$@"
 }
 
@@ -265,21 +273,47 @@ test_merge_sweeps_temp_render_from_a_killed_run() {
         "the render itself must still land"
 }
 
-# The library pins the hashing image to the tag docker-compose.yml runs, so a
-# device never fetches a second Authelia image. Nothing enforced that, and the
-# two drifted once already (#210): prestart pulled 4.39 while the stack ran
-# 4.39.19, so an unreachable registry took the whole stack down on first boot.
-test_hashing_image_matches_the_compose_pin() {
-    local lib_tag compose_tag
-    lib_tag=$(sed -n 's/^HALOS_OIDC_AUTHELIA_IMAGE="\(.*\)"$/\1/p' "$LIB_OIDC" | head -1)
+# A device must never fetch a second Authelia image, so the hashing tag is read
+# out of the compose file rather than declared again. The two were separate
+# declarations once, kept in step by a test, and drifted anyway (#210): prestart
+# pulled 4.39 while the stack ran 4.39.19, so an unreachable registry took the
+# whole stack down on first boot. Nothing can drift now, so what is left to
+# check is that the read works against the real file and that nothing names a
+# tag directly.
+test_hashing_image_comes_from_the_compose_file() {
+    local image compose_tag
+    # shellcheck source=/dev/null
+    . "$LIB_OIDC"
+    HALOS_OIDC_COMPOSE_FILE="$REPO_ROOT/docker-compose.yml"
+    image=$(halos_oidc_authelia_image) || {
+        echo "    could not read the Authelia image from the compose file"
+        return 1
+    }
     compose_tag=$(sed -n 's/^[[:space:]]*image:[[:space:]]*\(authelia\/authelia:.*\)$/\1/p' \
         "$REPO_ROOT/docker-compose.yml" | head -1)
-    assert_eq "$lib_tag" "$compose_tag" "the hashing image must be the tag the stack runs" || return 1
+    assert_eq "$image" "$compose_tag" "the hashing image must be the tag the stack runs" || return 1
 
-    if grep -qE 'authelia/authelia:' "$REPO_ROOT/prestart.sh"; then
-        echo "    prestart.sh names an Authelia tag directly; it must use \$HALOS_OIDC_AUTHELIA_IMAGE"
+    if grep -qE 'authelia/authelia:[0-9]' "$REPO_ROOT/prestart.sh" "$LIB_OIDC"; then
+        echo "    an Authelia tag is named directly; it must come from halos_oidc_authelia_image"
         return 1
     fi
+}
+
+# Refusing beats guessing: a fallback tag would reintroduce the second image,
+# and an empty one would register a client with a secret Authelia rejects.
+test_missing_compose_file_refuses_rather_than_guesses() {
+    local out status
+    # shellcheck source=/dev/null
+    . "$LIB_OIDC"
+    HALOS_OIDC_COMPOSE_FILE="$TMPDIR_ROOT/definitely-not-here.yml"
+    out=$(halos_oidc_authelia_image 2>&1) && status=0 || status=$?
+    HALOS_OIDC_COMPOSE_FILE="$REPO_ROOT/docker-compose.yml"
+
+    [ "$status" -ne 0 ] || { echo "    a missing compose file returned an image: $out"; return 1; }
+    case "$out" in
+        *"no authelia image found"*) ;;
+        *) echo "    no diagnostic naming the compose file: $out"; return 1 ;;
+    esac
 }
 
 # The fixtures above name a leftover by hand, so they cannot see the renderer's
@@ -814,7 +848,8 @@ test_reload_aborts_without_authelia_secrets() {
 
 run_test test_merge_renders_clients
 run_test test_merge_sweeps_temp_render_from_a_killed_run
-run_test test_hashing_image_matches_the_compose_pin
+run_test test_hashing_image_comes_from_the_compose_file
+run_test test_missing_compose_file_refuses_rather_than_guesses
 run_test test_sweep_glob_matches_what_the_renderer_creates
 run_test test_merge_sweeps_when_nothing_needs_rendering
 run_test test_merge_sweeps_when_hashing_fails

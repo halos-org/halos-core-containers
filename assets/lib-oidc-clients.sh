@@ -21,9 +21,35 @@
 # — at-least-once is the safe direction, since the alternative is a rendered
 # file Authelia never loaded that every later run reports as current.
 
-# Image used for secret hashing. Pinned to the tag docker-compose.yml runs, so
-# the device never has to pull, retain, or reach a registry for a second image.
-HALOS_OIDC_AUTHELIA_IMAGE="authelia/authelia:4.39.28"
+# Where the stack's compose file lives. Overridable so the tests, and a
+# prestart run from a checkout, can point at their own copy.
+HALOS_OIDC_COMPOSE_FILE="${HALOS_OIDC_COMPOSE_FILE:-/var/lib/container-apps/halos-core-containers/docker-compose.yml}"
+
+# The image used for secret hashing is whatever the compose file runs, so the
+# device never has to pull, retain, or reach a registry for a second image.
+#
+# Read rather than restated. The two were separate declarations once, kept in
+# step by a test, and they drifted anyway (#210): prestart pulled 4.39 while
+# the stack ran 4.39.19, and an unreachable registry took the whole stack down
+# on first boot.
+#
+# Resolved at call time, not when this file is sourced: callers source it from
+# the installed path, from a checkout, and from a staged root in the tests, and
+# only the caller knows where the compose file is in each.
+halos_oidc_authelia_image() {
+    local image
+    image=$(sed -n 's/^[[:space:]]*image:[[:space:]]*\(authelia\/authelia:.*\)$/\1/p' \
+        "$HALOS_OIDC_COMPOSE_FILE" 2>/dev/null | head -1)
+
+    # Refuse rather than fall back. A guessed tag reintroduces the second image
+    # this function exists to prevent, and hashing with no image at all would
+    # register a client with an empty secret that Authelia rejects at load.
+    if [ -z "$image" ]; then
+        printf 'no authelia image found in %s\n' "$HALOS_OIDC_COMPOSE_FILE" >&2
+        return 1
+    fi
+    printf '%s\n' "$image"
+}
 
 # Read one top-level scalar field from a snippet. First match only: a repeated
 # key would otherwise yield a multi-line value that escapes the client mapping
@@ -38,10 +64,11 @@ _halos_oidc_snippet_field() {
 # Every call salts afresh, so output is never comparable between runs — change
 # detection works off the inputs (see _halos_oidc_input_digest).
 _halos_oidc_hash_secret() {
-    local plaintext="$1" hash_output digest
+    local plaintext="$1" hash_output digest image
+    image=$(halos_oidc_authelia_image) || return 1
     if ! hash_output=$(HALOS_OIDC_PW="$plaintext" docker run --rm \
         -e HALOS_OIDC_PW \
-        "$HALOS_OIDC_AUTHELIA_IMAGE" \
+        "$image" \
         sh -c 'authelia crypto hash generate pbkdf2 --variant sha512 --password "$HALOS_OIDC_PW"' 2>&1); then
         printf 'docker: %s\n' "$hash_output" >&2
         return 1
