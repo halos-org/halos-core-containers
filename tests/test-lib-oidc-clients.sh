@@ -295,8 +295,12 @@ test_hashing_image_comes_from_the_compose_file() {
     compose_tag=$(grep -m1 -oE 'authelia/authelia:[^[:space:]]+' "$REPO_ROOT/docker-compose.yml")
     assert_eq "$image" "$compose_tag" "the hashing image must be the tag the stack runs" || return 1
 
-    if grep -qE 'authelia/authelia:[0-9]' "$REPO_ROOT/prestart.sh" "$LIB_OIDC"; then
-        echo "    an Authelia tag is named directly; it must come from halos_oidc_authelia_image"
+    # Any direct reference, not just a numeric tag: `:latest` and a digest pin
+    # are the ones worth catching, since either pulls the second image #210 was
+    # about. The library's own sed writes the slash escaped (authelia\/authelia),
+    # so it does not match itself.
+    if grep -qE 'authelia/authelia[:@][^\\]' "$REPO_ROOT/prestart.sh" "$LIB_OIDC"; then
+        echo "    an Authelia image is named directly; it must come from halos_oidc_authelia_image"
         return 1
     fi
 }
@@ -894,6 +898,31 @@ test_reload_aborts_without_authelia_secrets() {
 run_test test_merge_renders_clients
 run_test test_merge_sweeps_temp_render_from_a_killed_run
 run_test test_hashing_image_comes_from_the_compose_file
+# The unit tests check what the extraction returns; this checks what actually
+# reaches docker. A tag that is right in isolation and mangled by the time it
+# becomes an argument -- a trailing comment swallowed by the capture, say --
+# would pass everything else and fail on first boot.
+test_hash_runs_the_compose_tag() {
+    new_device
+    write_client "$DEV_ROOT" signalk "s3cret"
+    merge_on "$DEV_ROOT" || return 1
+
+    local compose_tag run_line
+    compose_tag=$(grep -m1 -oE 'authelia/authelia:[^[:space:]]+' \
+        "$DEV_ROOT/var/lib/container-apps/halos-core-containers/docker-compose.yml")
+    run_line=$(grep -m1 '^run ' "$DOCKER_STUB_LOG")
+
+    [ -n "$run_line" ] || { echo "    the stub logged no docker run"; return 1; }
+
+    # The exact argument, not a substring: `tag  # comment` contains `tag ` and
+    # would satisfy a looser match while docker rejects it outright. The image
+    # is the word immediately before the `sh -c` the CLI is invoked through.
+    local run_image
+    run_image=$(printf '%s\n' "$run_line" | sed -n 's/^.* \([^ ]*\) sh -c .*$/\1/p')
+    assert_eq "$run_image" "$compose_tag" "docker run got a different image than the compose file names" || return 1
+}
+
+run_test test_hash_runs_the_compose_tag
 run_test test_extraction_handles_awkward_compose_shapes
 run_test test_missing_compose_file_refuses_rather_than_guesses
 run_test test_sweep_glob_matches_what_the_renderer_creates
