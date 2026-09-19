@@ -1,4 +1,8 @@
 # Debian build artifacts
+/build/
+# tools/expose-debs.sh copies packages here for the shared lintian glob, so a
+# local CI reproduction leaves them in the checkout root.
+/*.deb
 debian/.debhelper/
 debian/debhelper-build-stamp
 debian/files

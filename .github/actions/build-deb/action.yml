@@ -28,3 +28,7 @@ runs:
     - name: Build packages
       shell: bash
       run: ./tools/build-all.sh
+
+    - name: Work around the shared lintian glob
+      shell: bash
+      run: ./tools/expose-debs.sh
