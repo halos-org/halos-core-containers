@@ -368,6 +368,68 @@ assert got == expected, f"{got} != {expected}"
 FIXCHECK
 }
 
+test_failed_write_is_reported_not_logged_as_success() {
+    # generate_mdns_services runs on the left of `||`, which disables `set -e`
+    # inside it. Unchecked, a failed write falls through to the success log and
+    # returns 0 -- a record reported as published that never was.
+    local root out
+    root="$(mktemp -d "$TMPDIR_ROOT/failwrite.XXXXXX")"
+    mkdir -p "$root/routing.d" "$root/avahi-services"
+    printf '%s\n' "$SK_ROUTING" > "$root/routing.d/signalk-server.yml"
+    chmod 500 "$root/avahi-services"
+
+    out=$(ROUTING_DIR="$root/routing.d" \
+        OUTPUT_DIR="$root/routing-labels" \
+        MIDDLEWARE_DIR="$root/traefik-dynamic.d" \
+        PORT_REGISTRY="$root/port-registry" \
+        AVAHI_SERVICES_DIR="$root/avahi-services" \
+        RUNTIME_DIR="$root/container-apps" \
+        SYSTEMCTL="$TMPDIR_ROOT/systemctl-stub" \
+        bash "$SCRIPT" signalk-server 2>&1)
+    local status=$?
+    chmod 700 "$root/avahi-services"
+
+    [ "$status" -eq 0 ] || { echo "the app start failed (exit $status)" >&2; return 1; }
+
+    case "$out" in
+        *"Created mDNS services"*)
+            echo "a failed write was logged as success:" >&2
+            echo "$out" >&2
+            return 1
+            ;;
+    esac
+    case "$out" in
+        *"WARNING: mDNS publication failed"*) ;;
+        *) echo "no warning for a failed write:" >&2; echo "$out" >&2; return 1 ;;
+    esac
+}
+
+test_record_withdrawn_when_routing_file_is_gone() {
+    # A deleted declaration leaves a record answering for a port nothing
+    # serves. main() returns early in that case, so the withdrawal has to
+    # happen before the early exit.
+    local root
+    root="$(run_configure signalk-server "$SK_ROUTING")" || return 1
+    [ -f "$root/avahi-services/halos-signalk-server.service" ] || return 1
+
+    rm -f "$root/routing.d/signalk-server.yml"
+    ROUTING_DIR="$root/routing.d" \
+    OUTPUT_DIR="$root/routing-labels" \
+    MIDDLEWARE_DIR="$root/traefik-dynamic.d" \
+    PORT_REGISTRY="$root/port-registry" \
+    AVAHI_SERVICES_DIR="$root/avahi-services" \
+    RUNTIME_DIR="$root/container-apps" \
+    SYSTEMCTL="$TMPDIR_ROOT/systemctl-stub" \
+        bash "$SCRIPT" signalk-server >/dev/null 2>&1 || return 1
+
+    if [ -e "$root/avahi-services/halos-signalk-server.service" ]; then
+        echo "the record outlived its routing declaration" >&2
+        return 1
+    fi
+}
+
+run_test test_failed_write_is_reported_not_logged_as_success
+run_test test_record_withdrawn_when_routing_file_is_gone
 run_test test_real_generated_routing_file_publishes
 run_test test_service_file_written_with_assigned_port
 run_test test_no_service_file_without_mdns

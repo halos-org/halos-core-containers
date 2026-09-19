@@ -485,10 +485,20 @@ MDNS_XML_EOF
 
     # Written through a temp file: avahi watches this directory, and a partial
     # read is a parse failure that drops every record in the file.
+    #
+    # Every step is checked rather than left to `set -e`. This function is
+    # called on the left of `||`, which disables `set -e` inside it -- so an
+    # unchecked failure would fall through to the success log and return 0,
+    # reporting a record that was never published.
     local tmp_file="${service_file}.tmp.$$"
-    printf '%s\n' "${new_content}" > "${tmp_file}"
-    chmod 644 "${tmp_file}"
-    mv -f "${tmp_file}" "${service_file}"
+    if ! printf '%s\n' "${new_content}" > "${tmp_file}" 2>/dev/null; then
+        rm -f "${tmp_file}"
+        return 1
+    fi
+    if ! chmod 644 "${tmp_file}" || ! mv -f "${tmp_file}" "${service_file}"; then
+        rm -f "${tmp_file}"
+        return 1
+    fi
     log "Created mDNS services: ${service_file}"
     reload_avahi
 }
@@ -500,7 +510,9 @@ withdraw_mdns_services() {
     local service_file="${AVAHI_SERVICES_DIR}/halos-${app_id}.service"
 
     if [ -f "${service_file}" ]; then
-        rm -f "${service_file}"
+        if ! rm -f "${service_file}"; then
+            return 1
+        fi
         log "Withdrew mDNS services: ${service_file}"
         reload_avahi
     fi
@@ -541,6 +553,12 @@ main() {
     local routing_file="${ROUTING_DIR}/${app_id}.yml"
 
     if [ ! -f "${routing_file}" ]; then
+        # The declaration is gone, so any record written from it is stale and
+        # would answer for a port nothing serves. Only this app's record is
+        # touched: reconciling every halos-*.service from one app's start would
+        # let a transiently missing routing file take another app off the air.
+        withdraw_mdns_services "${app_id}" \
+            || log "WARNING: could not withdraw mDNS services for ${app_id}"
         log "No routing config for ${app_id} at ${routing_file}, skipping"
         exit 0
     fi
