@@ -134,5 +134,25 @@ for lib in "$REPO_ROOT"/assets/lib-*.sh; do
     fi
 done
 
+# 4. The library reads the Authelia tag out of the compose file at a path it
+#    hardcodes as a default, and /usr/bin/reload-oidc-clients overrides nothing.
+#    If debian/rules ever installs the compose file elsewhere, every hash on a
+#    device fails while the unit tests -- which all pass an override -- stay
+#    green. That is the drift of #210 again, moved from a tag to a path.
+lib_default=$(sed -n 's/^HALOS_OIDC_COMPOSE_FILE="\${HALOS_OIDC_COMPOSE_FILE:-\(.*\)}"$/\1/p' \
+    "$REPO_ROOT/assets/lib-oidc-clients.sh" | head -1)
+rules_dir=$(sed -n 's/^LIB_DIR = \(.*\)$/\1/p' "$RULES" | head -1)
+rules_dir="${rules_dir//\$(PKG_NAME)/$PKG}"
+
+if [ -z "$lib_default" ]; then
+    fail "could not read HALOS_OIDC_COMPOSE_FILE's default out of lib-oidc-clients.sh"
+elif ! grep -q 'install -D -m 644 docker-compose.yml' "$RULES"; then
+    fail "debian/rules no longer installs docker-compose.yml; the library's default is stale"
+elif [ "$lib_default" = "${rules_dir}/docker-compose.yml" ]; then
+    pass "the library's default compose path is where debian/rules installs it (${lib_default})"
+else
+    fail "library reads '${lib_default}' but debian/rules installs to '${rules_dir}/docker-compose.yml'"
+fi
+
 printf '\nPassed: %d   Failed: %d\n' "$PASSES" "$FAILS"
 [ "$FAILS" -eq 0 ]
