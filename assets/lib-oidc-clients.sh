@@ -23,7 +23,7 @@
 
 # Image used for secret hashing. Pinned to the tag docker-compose.yml runs, so
 # the device never has to pull, retain, or reach a registry for a second image.
-HALOS_OIDC_AUTHELIA_IMAGE="authelia/authelia:4.39.19"
+HALOS_OIDC_AUTHELIA_IMAGE="authelia/authelia:4.39.28"
 
 # Read one top-level scalar field from a snippet. First match only: a repeated
 # key would otherwise yield a multi-line value that escapes the client mapping
