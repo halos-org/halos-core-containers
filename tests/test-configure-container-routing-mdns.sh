@@ -463,13 +463,52 @@ test_failed_file_write_is_reported_not_logged_as_success() {
         *"WARNING: mDNS publication failed"*) ;;
         *) echo "no warning for a failed write:" >&2; echo "$out" >&2; return 1 ;;
     esac
-    # Nothing half-written left behind.
-    if ls "$root/avahi-services"/*.tmp.* >/dev/null 2>&1; then
-        echo "a temp file survived the failure" >&2
-        return 1
-    fi
+    # Deliberately not asserting that no temp file survives: in both failure
+    # scenarios the redirect fails before the temp file is created, so the
+    # cleanup in generate_mdns_services never runs and such an assertion could
+    # not fail. Reaching it needs a write that succeeds and a rename that does
+    # not, which takes a sticky-bit directory owned by another user.
 }
 
+test_failed_withdrawal_is_reported_not_silent() {
+    # An app that drops its mdns: key withdraws its record. If that removal
+    # fails the record is still on the network, so reporting it as
+    # nothing-to-do is the same false success the write path was fixed for.
+    if [ "$(id -u)" -eq 0 ]; then
+        echo "SKIP (running as root; chmod cannot make the directory unwritable)"
+        return 0
+    fi
+
+    local root out status
+    root="$(mktemp -d "$TMPDIR_ROOT/failwithdraw.XXXXXX")"
+    mkdir -p "$root/routing.d" "$root/avahi-services"
+    printf '%s\n' "$WEB_APP_ROUTING" > "$root/routing.d/webapp.yml"
+    echo "stale" > "$root/avahi-services/halos-webapp.service"
+    chmod 500 "$root/avahi-services"
+
+    out=$(ROUTING_DIR="$root/routing.d" \
+        OUTPUT_DIR="$root/routing-labels" \
+        MIDDLEWARE_DIR="$root/traefik-dynamic.d" \
+        PORT_REGISTRY="$root/port-registry" \
+        AVAHI_SERVICES_DIR="$root/avahi-services" \
+        RUNTIME_DIR="$root/container-apps" \
+        SYSTEMCTL="$TMPDIR_ROOT/systemctl-stub" \
+        bash "$SCRIPT" webapp 2>&1)
+    status=$?
+    chmod 700 "$root/avahi-services"
+
+    [ "$status" -eq 0 ] || { echo "the app start failed (exit $status)" >&2; return 1; }
+    case "$out" in
+        *"WARNING: mDNS publication failed"*) ;;
+        *)
+            echo "a failed withdrawal produced no warning; the stale record is still advertised:" >&2
+            echo "$out" >&2
+            return 1
+            ;;
+    esac
+}
+
+run_test test_failed_withdrawal_is_reported_not_silent
 run_test test_failed_file_write_is_reported_not_logged_as_success
 run_test test_failed_write_is_reported_not_logged_as_success
 run_test test_record_withdrawn_when_routing_file_is_gone

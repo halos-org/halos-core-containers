@@ -435,7 +435,10 @@ generate_mdns_services() {
     if [ "${status}" -eq 3 ]; then
         # The app declares nothing. Withdraw any record left from a previous
         # declaration; a record for a port nothing serves is worse than none.
-        withdraw_mdns_services "$app_id"
+        # A withdrawal that failed has to surface: the record is still on the
+        # network, and reporting that as nothing-to-do is the bug this function
+        # was just fixed for.
+        withdraw_mdns_services "$app_id" || return 1
         return 0
     fi
 
@@ -502,7 +505,11 @@ MDNS_XML_EOF
         return 1
     fi
     log "Created mDNS services: ${service_file}"
+    # Explicit, so that a future reload_avahi which can fail does not turn every
+    # successful publish into a reported failure. The record is already written;
+    # a stale advertisement is avahi's problem to notice, not a publish error.
     reload_avahi
+    return 0
 }
 
 # Take an app's records off the network. Called on stop as well as on a run that
@@ -518,6 +525,7 @@ withdraw_mdns_services() {
         log "Withdrew mDNS services: ${service_file}"
         reload_avahi
     fi
+    return 0
 }
 
 # Ask a running avahi-daemon to re-read its services directory. Absent, stopped
