@@ -508,6 +508,46 @@ test_failed_withdrawal_is_reported_not_silent() {
     esac
 }
 
+test_double_hyphen_app_id_still_produces_valid_xml() {
+    # container-packaging-tools validates app_id as ^[a-z0-9][a-z0-9-]*$, which
+    # permits a double hyphen -- and `--` is illegal inside an XML comment, so
+    # putting the id there made avahi reject the whole file while this script
+    # reported success.
+    local routing root
+    routing="${SK_ROUTING//signalk-server/sig--nalk}"
+    root="$(run_configure sig--nalk "$routing")" || return 1
+
+    python3 -c "import xml.etree.ElementTree as E, sys; E.parse(sys.argv[1])" \
+        "$root/avahi-services/halos-sig--nalk.service" || {
+            echo "the generated file is not well-formed XML" >&2
+            cat "$root/avahi-services/halos-sig--nalk.service" >&2
+            return 1
+        }
+}
+
+test_app_id_cannot_escape_the_services_directory() {
+    # app_id arrives from argv and becomes a file name.
+    local root out
+    root="$(mktemp -d "$TMPDIR_ROOT/escape.XXXXXX")"
+    mkdir -p "$root/avahi-services" "$root/elsewhere"
+    echo "do not touch" > "$root/elsewhere/halos-evil.service"
+
+    out=$(AVAHI_SERVICES_DIR="$root/avahi-services" \
+        SYSTEMCTL="$TMPDIR_ROOT/systemctl-stub" \
+        bash "$SCRIPT" --mdns-withdraw "../elsewhere/evil" 2>&1)
+
+    [ -f "$root/elsewhere/halos-evil.service" ] || {
+        echo "a traversing app id removed a file outside the services directory" >&2
+        return 1
+    }
+    case "$out" in
+        *"invalid app id"*) ;;
+        *) echo "no warning for a traversing app id: $out" >&2; return 1 ;;
+    esac
+}
+
+run_test test_double_hyphen_app_id_still_produces_valid_xml
+run_test test_app_id_cannot_escape_the_services_directory
 run_test test_failed_withdrawal_is_reported_not_silent
 run_test test_failed_file_write_is_reported_not_logged_as_success
 run_test test_failed_write_is_reported_not_logged_as_success
