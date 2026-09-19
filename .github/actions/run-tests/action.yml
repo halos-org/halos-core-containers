@@ -34,7 +34,7 @@ runs:
         # ships OpenSSL 3.5.x, same as the target HaLOS images.
         if compgen -G "tests/test-*.sh" > /dev/null; then
           docker run --rm -v "$PWD":/workspace -w /workspace debian:trixie \
-            bash -c "apt-get update -qq && apt-get install -y -qq --no-install-recommends openssl ca-certificates bash >/dev/null && ./run test"
+            bash -c "apt-get update -qq && apt-get install -y -qq --no-install-recommends openssl ca-certificates bash python3 python3-yaml >/dev/null && ./run test"
         else
           echo "No shell tests found, skipping"
         fi

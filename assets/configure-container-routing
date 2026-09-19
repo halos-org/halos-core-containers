@@ -362,10 +362,16 @@ EOF
 # other producers may write, and the shapes a hand parser drops -- flow style,
 # quoted scalars -- would read as "declares nothing" and withdraw a working
 # record. Prints one "<type> <port>" line per service. Exit 0 with output, 3
-# when the key is absent, 4 when it is present but unusable.
+# when the key is absent, 4 when it is present but unusable, and 5 when the
+# parser cannot run at all. 5 is separate because a broken environment is not a
+# bad declaration, and reporting it as one sends the reader to the wrong file.
 get_mdns_services() {
     local file="$1"
     local external_port="$2"
+
+    if ! command -v python3 >/dev/null 2>&1; then
+        return 5
+    fi
 
     python3 - "$file" "$external_port" <<'MDNS_PARSE_EOF'
 import re
@@ -376,7 +382,10 @@ TYPE_RE = re.compile(r"_[A-Za-z0-9][A-Za-z0-9-]*\._(tcp|udp)\Z")
 path, external_port = sys.argv[1], sys.argv[2]
 try:
     import yaml
+except ImportError:
+    sys.exit(5)
 
+try:
     with open(path, encoding="utf-8") as handle:
         doc = yaml.safe_load(handle)
 except Exception:
@@ -427,6 +436,11 @@ generate_mdns_services() {
         # The app declares nothing. Withdraw any record left from a previous
         # declaration; a record for a port nothing serves is worse than none.
         withdraw_mdns_services "$app_id"
+        return 0
+    fi
+
+    if [ "${status}" -eq 5 ]; then
+        log "WARNING: python3 with PyYAML is required to publish mDNS records (install python3-yaml); leaving ${service_file} as is"
         return 0
     fi
 

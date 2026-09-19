@@ -54,6 +54,14 @@ run_test() {
     local name="$1"
     local out
     if out=$("$name" 2>&1); then
+        # A test that could not assert anything reports SKIP, not PASS: a green
+        # line for a check that did not run is worse than no line.
+        case "$out" in
+            SKIP*)
+                printf 'SKIP %s -- %s\n' "$name" "${out#SKIP }"
+                return 0
+                ;;
+        esac
         PASSES=$((PASSES + 1))
         printf '%sPASS%s %s\n' "$GREEN" "$RESET" "$name"
     else
@@ -241,6 +249,13 @@ test_withdraw_mode_removes_the_record() {
 }
 
 test_unwritable_services_dir_does_not_fail_the_start() {
+    # chmod means nothing to root, so as root this would assert nothing at all.
+    # Say so rather than reporting a pass the run did not earn.
+    if [ "$(id -u)" -eq 0 ]; then
+        echo "SKIP (running as root; chmod cannot make the directory unwritable)"
+        return 0
+    fi
+
     local root
     root="$(mktemp -d "$TMPDIR_ROOT/ro.XXXXXX")"
     mkdir -p "$root/routing.d" "$root/avahi-services"
