@@ -430,10 +430,11 @@ MDNS_PARSE_EOF
 
 # Publish the app's DNS-SD service records through avahi.
 #
-# The app itself cannot answer mDNS: avahi-daemon owns UDP 5353 on the host, and
-# a host-networked container that starts a second responder is silent. Records
-# that take the Traefik TLS port cannot ship as a static file either, because
-# that port is only assigned here.
+# The app publishes through avahi rather than for itself, and its own responder
+# has to be turned off: both bind UDP 5353 under host networking and both
+# answer, so a type declared here is then advertised twice, once collision-
+# renamed. Records that take the Traefik TLS port cannot ship as a static file
+# either, because that port is only assigned here.
 generate_mdns_services() {
     local app_id="$1"
     local external_port="$2"
