@@ -430,11 +430,12 @@ MDNS_PARSE_EOF
 
 # Publish the app's DNS-SD service records through avahi.
 #
-# The app publishes through avahi rather than for itself, and its own responder
-# has to be turned off: both bind UDP 5353 under host networking and both
-# answer, so a type declared here is then advertised twice, once collision-
-# renamed. Records that take the Traefik TLS port cannot ship as a static file
-# either, because that port is only assigned here.
+# For an app that does not advertise itself. Both responders bind UDP 5353 under
+# host networking and both answer, so a type also published by the app is then
+# advertised twice, once collision-renamed -- which is why the declaration
+# belongs only to an app that has no responder of its own. Records that take the
+# Traefik TLS port cannot ship as a static file either, because that port is only
+# assigned here.
 generate_mdns_services() {
     local app_id="$1"
     local external_port="$2"
