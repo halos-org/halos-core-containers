@@ -12,6 +12,7 @@ Depends: ${misc:Depends}, docker-compose | docker-compose-plugin, docker.io (>= 
 Recommends: halos-cockpit-config
 Provides: halos-reverse-proxy
 Conflicts: halos-reverse-proxy
+Breaks: homarr-container-adapter (<< 0.5.0)
 Description: Core infrastructure stack (Traefik, Authelia, Homarr)
  HaLOS core infrastructure providing the foundational web services:
  .
