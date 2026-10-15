@@ -6,6 +6,10 @@ theme: auto
 
 server:
   address: tcp://0.0.0.0:9091/sso
+  # Room for OIDC authorization requests: Homarr's auth cookies alone exceed the 4 KiB default.
+  buffers:
+    read: 16384
+    write: 16384
 
 log:
   level: info

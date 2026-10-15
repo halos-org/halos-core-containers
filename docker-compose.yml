@@ -102,7 +102,7 @@ services:
         tag: "{{.Name}}"
 
   homarr:
-    image: ghcr.io/hatlabs/homarr:v1.60.0-halos.2
+    image: ghcr.io/homarr-labs/homarr:v2.5.2
     container_name: homarr
     init: true
     restart: unless-stopped
@@ -117,7 +117,7 @@ services:
     environment:
       - SECRET_ENCRYPTION_KEY=${SECRET_ENCRYPTION_KEY}
       # NEXTAUTH_URL is intentionally unset. With trustHost: true in the
-      # Homarr fork's NextAuth config, the request's x-forwarded-host /
+      # Homarr's NextAuth config, the request's x-forwarded-host /
       # x-forwarded-proto determine the base URL per request. Setting
       # NEXTAUTH_URL forces next-auth's reqWithEnvURL() to override the
       # inbound Host with this canonical value, breaking multi-hostname
