@@ -147,6 +147,15 @@ printf '%s\n' "$*" >> "${DOCKER_STUB_LOG}"
 case "$1" in
     run)
         [ "${DOCKER_STUB_HASH_RC:-0}" -ne 0 ] && exit "${DOCKER_STUB_HASH_RC}"
+        # An image missing locally is pulled first, and the pull prints its
+        # own Digest: line ahead of the container's output.
+        if [ "${DOCKER_STUB_PULL:-0}" -eq 1 ]; then
+            printf "Unable to find image 'authelia/authelia:4.39.28' locally\n" >&2
+            printf '4.39.28: Pulling from authelia/authelia\n'
+            printf 'Digest: sha256:bd97cff4fcbf715b5ff1f9ae286afbe6033afce385302520b0368122d43a6f54\n'
+            printf 'Status: Downloaded newer image for authelia/authelia:4.39.28\n'
+        fi
+        [ "${DOCKER_STUB_NO_HASH:-0}" -eq 1 ] && exit 0
         # The plaintext arrives through the environment, not argv.
         printf 'Digest: $pbkdf2-sha512$fake$%s\n' "${HALOS_OIDC_PW:-none}"
         ;;
@@ -399,6 +408,29 @@ test_merge_sweeps_when_nothing_needs_rendering() {
     local stale; stale="$(plant_stale_render "$root")"
     merge_on "$root" > /dev/null
     [ ! -e "$stale" ] || { echo "    an unchanged merge left the temp render in place"; return 1; }
+}
+
+test_first_boot_pull_does_not_become_the_secret() {
+    new_device; local root="$DEV_ROOT"
+    write_client "$root" "homarr" "sekrit-one"
+    DOCKER_STUB_PULL=1 merge_on "$root" > /dev/null
+
+    local out; out="$(cat "$(authelia_dir "$root")/oidc-clients.yml")"
+    assert_contains "$out" "client_secret: '\$pbkdf2-sha512\$fake\$sekrit-one'" \
+        "the Authelia hash must be registered" || return 1
+    assert_not_contains "$out" "sha256:" "the image pull digest was registered as the secret"
+}
+
+test_output_without_an_authelia_hash_fails_the_merge() {
+    new_device; local root="$DEV_ROOT"
+    write_client "$root" "homarr" "sekrit-one"
+    local err
+    if err=$(DOCKER_STUB_PULL=1 DOCKER_STUB_NO_HASH=1 merge_on "$root" 2>&1 > /dev/null); then
+        echo "    a merge with no Authelia hash in the output succeeded"
+        return 1
+    fi
+    assert_contains "$err" "authelia crypto hash produced no digest" \
+        "the merge failed for another reason than the missing hash"
 }
 
 test_merge_sweeps_when_hashing_fails() {
@@ -926,6 +958,8 @@ run_test test_extraction_handles_awkward_compose_shapes
 run_test test_missing_compose_file_refuses_rather_than_guesses
 run_test test_sweep_glob_matches_what_the_renderer_creates
 run_test test_merge_sweeps_when_nothing_needs_rendering
+run_test test_first_boot_pull_does_not_become_the_secret
+run_test test_output_without_an_authelia_hash_fails_the_merge
 run_test test_merge_sweeps_when_hashing_fails
 run_test test_merge_reports_change_on_first_render
 run_test test_merge_without_snippets_disables_oidc

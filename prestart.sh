@@ -502,7 +502,7 @@ if [ ! -f "${AUTHELIA_DATA}/users_database.yml" ]; then
         printf 'docker: %s\n' "${HASH_OUTPUT}" >&2
         exit 1
     fi
-    INITIAL_HASH=$(printf '%s\n' "${HASH_OUTPUT}" | grep 'Digest:' | sed 's/Digest: //')
+    INITIAL_HASH=$(printf '%s\n' "${HASH_OUTPUT}" | grep -m1 '^Digest: \$' | sed 's/^Digest: //')
 
     if [ -z "${INITIAL_HASH}" ]; then
         echo "ERROR: password hashing produced no digest" >&2
