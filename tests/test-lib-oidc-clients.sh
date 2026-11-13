@@ -424,10 +424,13 @@ test_first_boot_pull_does_not_become_the_secret() {
 test_output_without_an_authelia_hash_fails_the_merge() {
     new_device; local root="$DEV_ROOT"
     write_client "$root" "homarr" "sekrit-one"
-    if DOCKER_STUB_PULL=1 DOCKER_STUB_NO_HASH=1 merge_on "$root" > /dev/null 2>&1; then
+    local err
+    if err=$(DOCKER_STUB_PULL=1 DOCKER_STUB_NO_HASH=1 merge_on "$root" 2>&1 > /dev/null); then
         echo "    a merge with no Authelia hash in the output succeeded"
         return 1
     fi
+    assert_contains "$err" "authelia crypto hash produced no digest" \
+        "the merge failed for another reason than the missing hash"
 }
 
 test_merge_sweeps_when_hashing_fails() {
