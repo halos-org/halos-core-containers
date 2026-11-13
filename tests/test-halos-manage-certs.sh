@@ -880,12 +880,12 @@ test_pending_rename_refreshes_cn() {
     run_script "$d" >/dev/null
     local ca_before leaf_before
     ca_before=$(_ca_fp "$(_auto_ca_crt "$d")")
-    leaf_before=$(_inode "$(_cert_file "$d")")
+    leaf_before=$(_ca_fp "$(_cert_file "$d")")
     printf '%s\n' "renamed.test" > "$d/hostnames.conf"
     sleep 1
     run_script "$d" >/dev/null
     [ "$(_ca_fp "$(_auto_ca_crt "$d")")" != "$ca_before" ] || { echo "auto CA must regenerate on unadopted rename"; return 1; }
-    [ "$(_inode "$(_cert_file "$d")")" != "$leaf_before" ] || { echo "leaf must re-sign after CA refresh"; return 1; }
+    [ "$(_ca_fp "$(_cert_file "$d")")" != "$leaf_before" ] || { echo "leaf must re-sign after CA refresh"; return 1; }
     assert_eq "$(_ca_cn "$(_auto_ca_crt "$d")")" "HaLOS Device CA (renamed.test)" "refreshed CN must name the new hostname" || return 1
     assert_eq "$(cat "$(_adoption_file "$d")")" "pending" "sentinel stays pending after refresh" || return 1
 }
