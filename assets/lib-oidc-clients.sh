@@ -108,7 +108,9 @@ _halos_oidc_hash_secret() {
         printf 'docker: %s\n' "$hash_output" >&2
         return 1
     fi
-    digest=$(printf '%s\n' "$hash_output" | grep -m1 'Digest:' | sed 's/Digest: //')
+    # Authelia's hashes start with '$'. Docker pulls a missing image first and
+    # prints its own "Digest: sha256:..." line ahead of them (#237).
+    digest=$(printf '%s\n' "$hash_output" | grep -m1 '^Digest: \$' | sed 's/^Digest: //')
     # An exit-0 run whose output carries no digest would otherwise register the
     # client with an empty secret, which Authelia rejects at config load.
     [ -n "$digest" ] || { printf 'authelia crypto hash produced no digest\n' >&2; return 1; }
